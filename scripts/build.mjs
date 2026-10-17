@@ -1,0 +1,10 @@
+import {readFile,mkdir,writeFile,cp,rm} from 'node:fs/promises';
+const assets={};
+for(const [name,type] of [['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['app.js','application/javascript; charset=utf-8']]) assets['/'+name]={type,content:await readFile('public/'+name,'utf8')};
+const core=await readFile('worker/core.js','utf8');
+await mkdir('worker',{recursive:true});
+const bundled=core+'\nexport default createHandler('+JSON.stringify(assets)+');\n';
+await writeFile('worker/index.js',bundled);
+await rm('dist',{recursive:true,force:true});await mkdir('dist/server',{recursive:true});await mkdir('dist/.openai',{recursive:true});
+await writeFile('dist/server/index.js',bundled);await cp('.openai/hosting.json','dist/.openai/hosting.json');await cp('drizzle','dist/drizzle',{recursive:true});
+console.log('Built Worker and embedded assets.');
