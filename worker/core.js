@@ -37,35 +37,10 @@ async function getSession(req, db) {
   if (!token) return null;
   return one(db,'SELECT users.id,users.email,users.password_hash,sessions.verified_at,sessions.token_hash FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?',await sha(token),now());
 }
-async function sessionResponse(db, user, verified = false) {
+async function sessionResponse(db, user, status = 200) {
   const token = randomToken(); const t = now();
-  await run(db,'INSERT INTO sessions (token_hash,user_id,expires_at,verified_at) VALUES (?,?,?,?)',await sha(token),user.id,t+604800,verified?t:0);
-  return json({user:{email:user.email,hasPassword:!!user.password_hash},verifiedUntil:verified?t+600:0},200,{'Set-Cookie':`__Host-jitu=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`});
-}
-async function takeCode(db, email, purpose, code) {
-  assert(/^\d{6}$/.test(String(code)), '请输入 6 位邮箱验证码。');
-  const row=await one(db,'SELECT * FROM email_codes WHERE email=? AND purpose=? ORDER BY created_at DESC LIMIT 1',email,purpose);
-  assert(row && row.expires_at>now() && row.attempts<5,'验证码已过期或尝试次数过多，请重新发送。');
-  await run(db,'UPDATE email_codes SET attempts=attempts+1 WHERE id=?',row.id);
-  assert(await sha(`${row.id}:${code}`)===row.code_hash,'验证码不正确，请检查后重试。');
-  const claimed=await one(db,'DELETE FROM email_codes WHERE id=? AND attempts<=5 AND expires_at>? RETURNING id',row.id,now());
-  assert(claimed,'验证码已使用，请重新发送。');
-}
-async function sendCode(req, env, input) {
-  const email=validEmail(input.email), purpose=input.purpose==='password'?'password':'login';
-  assert(env.RESEND_API_KEY && env.EMAIL_FROM,'网站尚未配置验证码邮件服务，请联系站长设置发件邮箱。',503);
-  await rate(env.DB,`code-email:${await sha(email)}`,1,60);
-  await rate(env.DB,`code-day:${await sha(email)}`,12,86400);
-  await rate(env.DB,`code-ip:${req.headers.get('cf-connecting-ip') || 'unknown'}`,15,3600);
-  if(purpose==='password' && !(await one(env.DB,'SELECT id FROM users WHERE email=?',email))) return json({message:'如果邮箱已注册，验证码将发送到你的邮箱。'});
-  const id=uid(); let number; do {number=crypto.getRandomValues(new Uint32Array(1))[0];} while(number>=4294000000);
-  const code=String(number%1000000).padStart(6,'0');
-  await run(env.DB,'DELETE FROM email_codes WHERE email=? AND purpose=?',email,purpose);
-  await run(env.DB,'INSERT INTO email_codes (id,email,purpose,code_hash,expires_at,attempts,created_at) VALUES (?,?,?,?,?,0,?)',id,email,purpose,await sha(`${id}:${code}`),now()+600,now());
-  let response;
-  try {response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json','Idempotency-Key':id},body:JSON.stringify({from:env.EMAIL_FROM,to:[email],subject:`${code} 是你的即图验证码`,html:`<div style="background:#fff8f2;padding:40px;color:#243b36;font-family:sans-serif"><h2>即图 · 灵感工作室</h2><p>你的邮箱验证码是：</p><p style="font-size:32px;letter-spacing:8px;font-weight:bold">${code}</p><p>10 分钟内有效，请勿转发。如果这不是你的操作，请忽略此邮件。</p></div>`}),signal:AbortSignal.timeout(20000)});} catch {await run(env.DB,'DELETE FROM email_codes WHERE id=?',id);throw new AppError('邮件服务暂时无法连接，请稍后再试。',503);}
-  if(!response.ok){await run(env.DB,'DELETE FROM email_codes WHERE id=?',id);throw new AppError('验证码未能发送，请联系站长检查邮件服务和发件域名。',503);}
-  return json({message:'验证码已发送，请检查收件箱和垃圾邮件。'});
+  await run(db,'INSERT INTO sessions (token_hash,user_id,expires_at,verified_at) VALUES (?,?,?,0)',await sha(token),user.id,t+604800);
+  return json({user:{email:user.email,hasPassword:!!user.password_hash}},status,{'Set-Cookie':`__Host-jitu=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`});
 }
 function keyFrom(req) { const key=(req.headers.get('x-jitu-key')||'').trim(); assert(key.length>=12 && key.length<=512 && /^[\x21-\x7e]+$/.test(key),'请先连接有效的即图 API 密钥。',422); return key; }
 export function validateParams(p) {
@@ -157,28 +132,38 @@ export function createHandler(assets) {
       assert(env.DB,'网站数据库尚未就绪，请联系站长完成部署。',503);
       if(!['GET','HEAD'].includes(req.method)) {assert(req.headers.get('origin')===new URL(req.url).origin,'页面已过期，请从本站重新打开后操作。',403);}
       const ip=req.headers.get('cf-connecting-ip')||'unknown';
-      if(path==='/api/config' && req.method==='GET')return json({mailReady:!!(env.RESEND_API_KEY&&env.EMAIL_FROM),ownerLoginAvailable:!!req.headers.get('oai-authenticated-user-id')});
+      if(path==='/api/config' && req.method==='GET')return json({authMethods:['password'],registrationEnabled:true,emailCodeEnabled:false});
       const user=await getSession(req,env.DB);
-      if(path==='/api/me' && req.method==='GET')return json({user:user?{email:user.email,hasPassword:!!user.password_hash}:null,verifiedUntil:user?user.verified_at+600:0});
-      if(path==='/api/auth/code/send' && req.method==='POST')return await sendCode(req,env,await bodyJSON(req));
-      if(path==='/api/auth/code/login' && req.method==='POST') {
-        const input=await bodyJSON(req), email=validEmail(input.email);await rate(env.DB,`login:${ip}`,30,900);await takeCode(env.DB,email,'login',input.code);
-        await run(env.DB,'INSERT OR IGNORE INTO users (id,email,created_at) VALUES (?,?,?)',uid(),email,now());const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);return sessionResponse(env.DB,account,true);
+      if(path==='/api/me' && req.method==='GET')return json({user:user?{email:user.email,hasPassword:!!user.password_hash}:null});
+      if(path.startsWith('/api/auth/code/'))throw new AppError('邮箱验证码功能已暂停，请使用邮箱和密码注册或登录。',403);
+      if(path==='/api/auth/owner')throw new AppError('请使用邮箱和密码注册或登录。',403);
+      if(path==='/api/auth/password/register' && req.method==='POST') {
+        const input=await bodyJSON(req),email=validEmail(input.email);validatePassword(input.password);
+        assert(input.password===input.confirmPassword,'两次输入的密码不一致。');
+        await rate(env.DB,`register-ip:${ip}`,10,3600);await rate(env.DB,`register-email:${await sha(email)}`,5,3600);
+        const id=uid(),hash=await passwordHash(input.password);
+        const created=await one(env.DB,'INSERT INTO users (id,email,password_hash,created_at) VALUES (?,?,?,?) ON CONFLICT(email) DO NOTHING RETURNING id',id,email,hash,now());
+        assert(created,'该邮箱已注册，请切换到登录；忘记密码请联系站长。',409);
+        return sessionResponse(env.DB,{id,email,password_hash:hash},201);
       }
       if(path==='/api/auth/password/login' && req.method==='POST') {
-        const input=await bodyJSON(req),email=validEmail(input.email);assert(typeof input.password==='string'&&input.password.length<=128,'请填写密码。');await rate(env.DB,`login:${ip}`,15,900);await rate(env.DB,`password:${await sha(email)}`,10,900);
-        const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请先通过验证码注册。',401);return sessionResponse(env.DB,account);
-      }
-      if(path==='/api/auth/owner' && req.method==='POST') {
-        assert(req.headers.get('oai-authenticated-user-id')&&req.headers.get('oai-authenticated-user-email'),'管理预览仅限通过托管平台验证的站长。',403);const email=validEmail(req.headers.get('oai-authenticated-user-email'));
-        await run(env.DB,'INSERT OR IGNORE INTO users (id,email,created_at) VALUES (?,?,?)',uid(),email,now());return sessionResponse(env.DB,await one(env.DB,'SELECT * FROM users WHERE email=?',email),true);
+        const input=await bodyJSON(req),email=validEmail(input.email);assert(typeof input.password==='string'&&input.password.length>0&&input.password.length<=128,'请填写密码。');await rate(env.DB,`login:${ip}`,15,900);await rate(env.DB,`password:${await sha(email)}`,10,900);
+        const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return sessionResponse(env.DB,account);
       }
       assert(user,'请先登录你的账号。',401);
       if(path==='/api/auth/password/set' && req.method==='POST') {
         const input=await bodyJSON(req);validatePassword(input.password);
-        if(user.verified_at+600<now()){await rate(env.DB,`reset:${user.id}`,10,900);await takeCode(env.DB,user.email,'password',input.code);}
-        await run(env.DB,'UPDATE users SET password_hash=? WHERE id=?',await passwordHash(input.password),user.id);
-        await run(env.DB,'DELETE FROM sessions WHERE user_id=?',user.id);return sessionResponse(env.DB,{...user,password_hash:'set'},true);
+        assert(input.password===input.confirmPassword,'两次输入的密码不一致。');
+        await rate(env.DB,`password-change:${user.id}`,10,900);
+        if(user.password_hash) {
+          assert(typeof input.currentPassword==='string'&&input.currentPassword.length>0&&input.currentPassword.length<=128,'请输入当前密码。');
+          assert(await passwordMatches(input.currentPassword,user.password_hash),'当前密码不正确。',403);
+        }
+        // Existing authenticated accounts without a password may set their first password.
+        const hash=await passwordHash(input.password);
+        const updated=await one(env.DB,'UPDATE users SET password_hash=? WHERE id=? AND password_hash IS ? RETURNING id',hash,user.id,user.password_hash);
+        assert(updated,'密码已在其他页面更改，请重新登录。',409);
+        await run(env.DB,'DELETE FROM sessions WHERE user_id=?',user.id);return sessionResponse(env.DB,{...user,password_hash:hash});
       }
       if(path==='/api/auth/logout' && req.method==='POST'){await run(env.DB,'DELETE FROM sessions WHERE token_hash=?',user.token_hash);return json({ok:true},200,{'Set-Cookie':'__Host-jitu=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'});}
       if(path==='/api/models' && req.method==='GET') {const data=await upstreamJSON(await upstream('/api/models',keyFrom(req)));return json({models:data});}
