@@ -41,9 +41,60 @@ function updateIdentity(){
  $('#connection-label').textContent=apiProfiles.find(p=>p.id===selectedApiId)?.name||'连接 API';$('#switch-api').title=selectedApiId?'当前 API：'+(apiProfiles.find(p=>p.id===selectedApiId)?.name||'已选择'):'添加或切换 API';$('#header-key').classList.toggle('connected',!!apiKey);renderSidebar();updateComposerState();
 }
 $('#account-open').onclick=()=>openDialog(user?'#account-dialog':'#auth-dialog');$('#switch-api').onclick=$('#header-key').onclick=()=>{if(requireUser()){renderAPIProfiles();openDialog('#key-dialog')}};$('#help-open').onclick=()=>openGuide(false);
-function selectAuth(value){authMode=value;const registering=value==='register';$$('[data-auth]').forEach(b=>{b.classList.toggle('active',b.dataset.auth===value);b.setAttribute('aria-selected',b.dataset.auth===value);});$('#register-confirm-field').hidden=!registering;$('#auth-confirm-password').required=registering;$('#auth-password').minLength=registering?10:1;$('#auth-password').autocomplete=registering?'new-password':'current-password';$('#auth-password').placeholder=registering?'设置至少 10 位密码':'输入你的密码';$('#auth-submit').textContent=registering?'注册并登录':'登录';$('#auth-helper').textContent=registering?'密码至少 10 位，建议包含字母和数字。':'首次使用请切换到「注册账号」。';$('#auth-error').textContent='';$('#auth-confirm-password').value='';}
-$$('[data-auth]').forEach(b=>b.onclick=()=>selectAuth(b.dataset.auth));selectAuth('login');
-$('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';if(authMode==='register'&&$('#auth-password').value!==$('#auth-confirm-password').value){$('#auth-error').textContent='两次输入的密码不一致。';return;}$('#auth-submit').disabled=true;try{const body={email:$('#auth-email').value,password:$('#auth-password').value,confirmPassword:$('#auth-confirm-password').value};const d=await api(`/api/auth/password/${authMode}`,{method:'POST',body});user=d.user;$('#auth-password').value='';$('#auth-confirm-password').value='';closeDialog('#auth-dialog');updateIdentity();await afterSignIn();toast(authMode==='register'?'注册成功，欢迎来到你的灵感工作室。':'登录成功，欢迎回来。');}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
+let authConfig={emailCodeEnabled:false},codeSending=false;
+const codeCooldowns=new Map();
+const emailCodeKey=()=>$('#auth-email').value.trim().toLowerCase();
+function updateCodeButton(){
+ const left=Math.max(0,Math.ceil(((codeCooldowns.get(emailCodeKey())||0)-Date.now())/1000));
+ $('#send-auth-code').disabled=codeSending||left>0||!authConfig.emailCodeEnabled;
+ $('#send-auth-code').textContent=codeSending?'正在发送…':left>0?`${left} 秒后重发`:'发送验证码';
+}
+function selectAuth(value){
+ authMode=value;const verifying=value!=='login';
+ $$('[data-auth]').forEach(b=>{b.classList.toggle('active',b.dataset.auth===value);b.setAttribute('aria-selected',b.dataset.auth===value);});
+ $('#auth-title').textContent=value==='reset'?'找回你的账号':'登录，遇见你的灵感';
+ $('#register-confirm-field').hidden=!verifying;$('#auth-confirm-password').required=verifying;
+ $('#auth-password').minLength=verifying?10:1;$('#auth-password').autocomplete=verifying?'new-password':'current-password';
+ $('#auth-password').placeholder=verifying?'设置至少 10 位密码':'输入你的密码';
+ $('#auth-submit').textContent=value==='register'?'验证邮箱并注册':value==='reset'?'验证并重设密码':'登录';
+ $('#auth-submit').disabled=verifying&&!authConfig.emailCodeEnabled;
+ $('#auth-helper').textContent=verifying?'密码至少 10 位；请使用最新邮件中的验证码。':'首次使用请切换到「注册账号」。';
+ $('#auth-code-field').hidden=!verifying;$('#auth-code').required=verifying;
+ $('#forgot-password').hidden=value!=='login';
+ $('#auth-service-note').textContent=authConfig.emailCodeEnabled?'注册和找回密码需验证邮箱；验证码 10 分钟内有效。':'邮件服务尚未就绪，暂时无法注册或找回密码。已有账号可使用密码登录。';
+ for(const id of ['#auth-error','#auth-code-status'])$(id).textContent='';
+ for(const id of ['#auth-password','#auth-confirm-password','#auth-code'])$(id).value='';
+ updateCodeButton();
+}
+$$('[data-auth]').forEach(b=>b.onclick=()=>selectAuth(b.dataset.auth));
+$('#forgot-password').onclick=()=>selectAuth('reset');selectAuth('login');
+setInterval(updateCodeButton,1000);
+$('#auth-email').addEventListener('input',()=>{$('#auth-code').value='';$('#auth-code-status').textContent='';updateCodeButton()});
+$('#send-auth-code').onclick=async()=>{
+ if(!$('#auth-email').reportValidity())return;
+ const email=emailCodeKey(),purpose=authMode;
+ if(!['register','reset'].includes(purpose)||codeSending)return;
+ codeSending=true;$('#auth-error').textContent='';updateCodeButton();
+ try{
+  const d=await api('/api/auth/code/send',{method:'POST',body:{email,purpose}});
+  codeCooldowns.set(email,Date.now()+d.retryAfter*1000);
+  if(email===emailCodeKey()&&purpose===authMode){$('#auth-code-status').textContent=d.message;$('#auth-code').focus();}
+ }catch(e){$('#auth-error').textContent=e.message;}finally{codeSending=false;updateCodeButton();}
+};
+$('#auth-form').onsubmit=async e=>{
+ e.preventDefault();const mode=authMode;$('#auth-error').textContent='';
+ if(mode!=='login'&&$('#auth-password').value!==$('#auth-confirm-password').value){$('#auth-error').textContent='两次输入的密码不一致。';return;}
+ $('#auth-submit').disabled=true;
+ try{
+  const body={email:$('#auth-email').value,password:$('#auth-password').value,confirmPassword:$('#auth-confirm-password').value,code:$('#auth-code').value};
+  const d=await api(`/api/auth/password/${mode}`,{method:'POST',body});
+  if(mode==='reset'){
+   user=null;resetWorkspace();updateIdentity();selectAuth('login');$('#auth-helper').textContent='密码已重设，请使用新密码登录。';toast('密码已重设，所有设备需要重新登录。');return;
+  }
+  user=d.user;for(const id of ['#auth-password','#auth-confirm-password','#auth-code'])$(id).value='';
+  closeDialog('#auth-dialog');updateIdentity();await afterSignIn();toast(mode==='register'?'注册成功，欢迎来到你的灵感工作室。':'登录成功，欢迎回来。');
+ }catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=authMode!=='login'&&!authConfig.emailCodeEnabled;}
+};
 $('#set-password-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;$('#account-error').textContent='';if($('#new-password').value!==$('#confirm-password').value){$('#account-error').textContent='两次输入的密码不一致。';return;}button.disabled=true;try{const d=await api('/api/auth/password/set',{method:'POST',body:{password:$('#new-password').value,confirmPassword:$('#confirm-password').value,currentPassword:$('#current-password').value}});user=d.user;e.target.reset();updateIdentity();closeDialog('#account-dialog');toast('密码已保存，其他设备需要使用新密码重新登录。');if(!apiKey)openDialog('#key-dialog');}catch(e){$('#account-error').textContent=e.message;}finally{button.disabled=false;}};
 $('#logout').onclick=async()=>{try{await api('/api/auth/logout',{method:'POST',body:{}});user=null;apiKey='';$('#key-form').reset();closeDialog('#account-dialog');resetWorkspace();updateIdentity();toast('已退出登录，当前页面的账号信息已清除。')}catch(e){toast(e.message)}};
 $('#toggle-key').onclick=()=>{const show=$('#api-key').type==='password';$('#api-key').type=show?'text':'password';$('#toggle-key').textContent=show?'隐藏':'显示'};
@@ -59,7 +110,7 @@ $('#key-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;bu
 $('#confirm-delete-api').onclick=async e=>{e.currentTarget.disabled=true;try{await api('/api/api-profiles/'+deleteAPIId,{method:'DELETE'});await loadAPIProfiles();closeDialog('#delete-api-dialog');toast('已移除这把 API')}catch(error){$('#delete-api-error').textContent=error.message}finally{e.target.disabled=false}};
 function threadTasks(id){return [...tasks.values()].filter(t=>t.conversationId===id).sort((a,b)=>a.createdAt-b.createdAt)}
 function saveDraft(){const t=current();if(t)t.draft=$('#prompt').value}
-function switchThread(id){saveDraft();activeId=id;openSetting=null;closeMobileSidebar();render();ensureActiveResults();requestAnimationFrame(()=>scrollBottom())}
+function switchThread(id){saveDraft();activeId=id;openSetting=null;$('#app').classList.remove('menu-open');render();ensureActiveResults();requestAnimationFrame(()=>scrollBottom())}
 function render(){if(!current())activeId=newThread();$('#chat-title').textContent=current().title;$('#prompt').value=current().draft;$('#mode').value=current().settings.mode;$('#mask-file').value='';$('#mask-field').hidden=current().settings.mode!=='mask';renderSidebar();renderChat();renderSettings();renderFiles();updateSize();updateComposerState()}
 function renderSidebar(){const q=$('#search').value.trim().toLowerCase();const all=[...threads.values()].sort((a,b)=>Number(!!b.pinned)-Number(!!a.pinned)||b.updatedAt-a.updatedAt);$('#sessions').replaceChildren();let visible=0;
  for(const t of all){const rows=threadTasks(t.id);if(q&&!t.title.toLowerCase().includes(q)&&!rows.some(r=>r.prompt.toLowerCase().includes(q)))continue;visible++;let button=document.createElement('button');button.className='session'+(t.id===activeId?' active':'');button.dataset.session=t.id;if(t.id===activeId)button.setAttribute('aria-current','true');
@@ -88,7 +139,6 @@ function download(url,name){const a=document.createElement('a');a.href=url;a.dow
 async function useImage(task,index){const item=images.get(task.id+':'+index);if(!item?.blob)return;const t=current();t.restoreToken=Symbol('generated-image');t.loadingInputs=false;t.inputRestoreError=null;t.editingTaskId=null;if(t.maskURL)URL.revokeObjectURL(t.maskURL);t.mask=null;t.maskURL=null;if(t.fileURLs.length)t.fileURLs.forEach(URL.revokeObjectURL);t.files=[new File([item.blob],`image-meow-reference.${item.ext}`,{type:item.blob.type})];t.fileURLs=t.files.map(URL.createObjectURL);t.settings.mode='edit';$('#mode').value='edit';$('#mask-field').hidden=true;renderFiles();$('#prompt').value='';t.draft='';updateComposerState();$('#prompt').placeholder='描述想对这张图片做的修改…';$('#prompt').focus();toast('已将这张作品设为参考图，请描述想做的修改。')}
 async function reeditTask(task){
  const t=current();if(t.loadingInputs)return;
- const selectedFiles=[...t.files],selectedMask=t.mask;
  const requestToken=Symbol('reedit');t.restoreToken=requestToken;t.editingTaskId=task.id;t.inputRestoreError=null;
  t.settings={...defaults(),...task.uiSettings,model:task.model,count:task.n,mode:task.mode};
  if(!task.uiSettings){const [w,h]=task.size.split('x').map(Number);t.settings.ratio='custom';t.settings.customRatioWidth=w;t.settings.customRatioHeight=h;t.settings.resolution=Math.max(w,h)}
@@ -105,10 +155,7 @@ async function reeditTask(task){
    if(threads.get(t.id)!==t||t.restoreToken!==requestToken)return;
    t.files=restored.filter(r=>r.kind==='image').map(r=>r.file);t.mask=restored.find(r=>r.kind==='mask')?.file||null;
   }else if(snapshot){t.files=[...snapshot.files];t.mask=snapshot.mask||null}
-  else if(task.mode!=='text'){
-   t.files=selectedFiles;t.mask=task.mode==='mask'?selectedMask:null;
-   t.inputRestoreError=t.files.length?'这条旧记录未保存原参考图，已保留当前选中的 '+t.files.length+' 张参考图'+(t.mask?'和 PNG 遮罩':'')+'。请核对图片后再生成。':'这条旧记录未保存原参考图，请重新上传参考图'+(task.mode==='mask'?'和 PNG 遮罩':'')+'。';
-  }
+  else if(task.mode!=='text')t.inputRestoreError='这条旧记录未保存原参考图，请重新上传参考图'+(task.mode==='mask'?'和 PNG 遮罩':'')+'。';
   t.fileURLs=t.files.map(URL.createObjectURL);
  }catch(e){if(threads.get(t.id)!==t||t.restoreToken!==requestToken)return;t.files=[];t.fileURLs=[];t.mask=null;t.inputRestoreError='原参考图读取失败：'+e.message+' 请重新点击“重新编辑”重试，或上传替换图片。'}
  finally{if(threads.get(t.id)===t&&t.restoreToken===requestToken){t.loadingInputs=false;if(activeId===t.id){renderFiles();updateComposerState()}}}
@@ -173,13 +220,8 @@ $('#confirm-delete-conversation').onclick=async e=>{e.currentTarget.disabled=tru
 $('#rename-chat').onclick=()=>renameConversation(activeId);$('#rename-form').onsubmit=async e=>{e.preventDefault();const t=threads.get(renameTargetId),title=$('#conversation-name').value.trim();if(!t)return;if(!title){$('#rename-error').textContent='请输入会话名称。';return}const button=e.submitter;button.disabled=true;try{if(user){await ensureRemoteConversation(t);await api('/api/conversations/'+t.id,{method:'PATCH',body:{title}});}t.title=title;renderSidebar();if(activeId===t.id)$('#chat-title').textContent=title;closeDialog('#rename-dialog')}catch(error){$('#rename-error').textContent=error.message}finally{button.disabled=false}};
 document.addEventListener('click',e=>{if(!e.composedPath().some(node=>node instanceof Element&&(node.closest('.session-more')||node.id==='conversation-menu')))closeConversationMenu()});
 $('#conversation-menu').addEventListener('keydown',e=>{const buttons=[...e.currentTarget.querySelectorAll('button')];const index=buttons.indexOf(document.activeElement);if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();buttons[e.key==='Home'?0:e.key==='End'?buttons.length-1:(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus()}});
-const sidebarMedia=matchMedia('(max-width:700px)');
-function syncSidebarState(){const expanded=sidebarMedia.matches?$('#app').classList.contains('menu-open'):!$('#app').classList.contains('sidebar-collapsed');$('#mobile-menu').setAttribute('aria-expanded',String(expanded));$('#collapse').setAttribute('aria-expanded',String(expanded));$('.sidebar').inert=!expanded;}
-function setSidebarOpen(open){if(sidebarMedia.matches)$('#app').classList.toggle('menu-open',open);else{$('#app').classList.toggle('sidebar-collapsed',!open);$('#app').classList.remove('menu-open')}syncSidebarState();$(open?'#collapse':'#mobile-menu').focus();}
-function closeMobileSidebar(){const wasOpen=$('#app').classList.contains('menu-open');$('#app').classList.remove('menu-open');syncSidebarState();if(wasOpen&&sidebarMedia.matches)$('#mobile-menu').focus();}
-$('#mobile-menu').onclick=()=>setSidebarOpen(true);$('#shade').onclick=closeMobileSidebar;$('#collapse').onclick=()=>setSidebarOpen(false);
-sidebarMedia.addEventListener('change',()=>{$('#app').classList.remove('menu-open');syncSidebarState()});syncSidebarState();
+$('#mobile-menu').onclick=()=>$('#app').classList.add('menu-open');$('#shade').onclick=()=>$('#app').classList.remove('menu-open');$('#collapse').onclick=()=>{if(innerWidth<=700)$('#app').classList.remove('menu-open');else $('#app').classList.toggle('sidebar-collapsed')};
 // Let editing inputs keep their values when clicking inside an open parameter menu.
-document.addEventListener('click',e=>{if(!e.composedPath().some(node=>node instanceof Element&&node.matches('.setting'))&&openSetting){openSetting=null;renderSettings()}});document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.popover')){e.preventDefault();const apply=e.target.closest('.popover').querySelector('#apply-ratio,#apply-count');apply?.click();return}if(e.key==='Escape'){closeConversationMenu();openSetting=null;renderSettings();closeMobileSidebar()}});
+document.addEventListener('click',e=>{if(!e.composedPath().some(node=>node instanceof Element&&node.matches('.setting'))&&openSetting){openSetting=null;renderSettings()}});document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.popover')){e.preventDefault();const apply=e.target.closest('.popover').querySelector('#apply-ratio,#apply-count');apply?.click();return}if(e.key==='Escape'){closeConversationMenu();openSetting=null;renderSettings();$('#app').classList.remove('menu-open')}});
 window.addEventListener('beforeunload',e=>{if(pending.size){e.preventDefault();e.returnValue=''}});
-activeId=newThread();render();updateIdentity();try{const d=await api('/api/me');user=d.user;updateIdentity();if(user){await loadAPIProfiles();await loadHistory();if(!hasSeenGuide())openGuide(false)}else if(!hasSeenGuide())openGuide(false)}catch(e){toast(e.message)}
+activeId=newThread();render();updateIdentity();try{authConfig=await api('/api/config');selectAuth(authMode);}catch{$('#auth-service-note').textContent='暂时无法确认邮件服务状态，请稍后重试。';}try{const d=await api('/api/me');user=d.user;updateIdentity();if(user){await loadAPIProfiles();await loadHistory();if(!hasSeenGuide())openGuide(false)}else if(!hasSeenGuide())openGuide(false)}catch(e){toast(e.message)}
