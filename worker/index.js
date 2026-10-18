@@ -81,7 +81,10 @@ async function getSession(req, db) {
 }
 async function sessionResponse(db, user, status = 200) {
   const token = randomToken(); const t = now();
-  await run(db,'INSERT INTO sessions (token_hash,user_id,expires_at,verified_at) VALUES (?,?,?,0)',await sha(token),user.id,t+604800);
+  // Recheck the password version atomically: an in-flight old-password login must not
+  // create a surviving session after a concurrent password reset has completed.
+  const session=await one(db,'INSERT INTO sessions (token_hash,user_id,expires_at,verified_at) SELECT ?,id,?,0 FROM users WHERE id=? AND password_hash IS ? RETURNING token_hash',await sha(token),t+604800,user.id,user.password_hash||null);
+  assert(session,'密码已更改，请使用新密码重新登录。',401);
   return json({user:publicUser(user)},status,{'Set-Cookie':`__Host-jitu=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`});
 }
 function publicUser(user){return {email:user.email,hasPassword:!!user.password_hash,onboardingCompleted:!!user.onboarding_completed_at};}
@@ -295,7 +298,8 @@ export function createHandler(assets) {
         const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);
         const hash=await passwordHash(input.password);
         await consumeEmailCode(env,email,'reset',input.code,ip);assert(account,'验证码不正确或已失效。');
-        await run(env.DB,'UPDATE users SET password_hash=? WHERE id=?',hash,account.id);
+        const updated=await one(env.DB,'UPDATE users SET password_hash=? WHERE id=? AND password_hash IS ? RETURNING id',hash,account.id,account.password_hash);
+        assert(updated,'密码已在其他页面更改，请重新获取验证码。',409);
         await run(env.DB,'DELETE FROM sessions WHERE user_id=?',account.id);
         return json({ok:true},200,{'Set-Cookie':'__Host-jitu=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'});
       }
@@ -309,11 +313,11 @@ export function createHandler(assets) {
         await consumeEmailCode(env,email,'register',input.code,ip);
         const created=await one(env.DB,'INSERT INTO users (id,email,password_hash,created_at) VALUES (?,?,?,?) ON CONFLICT(email) DO NOTHING RETURNING id',id,email,hash,now());
         assert(created,'该邮箱已注册，请切换到登录或找回密码。',409);
-        return sessionResponse(env.DB,{id,email,password_hash:hash},201);
+        return await sessionResponse(env.DB,{id,email,password_hash:hash},201);
       }
       if(path==='/api/auth/password/login' && req.method==='POST') {
         const input=await bodyJSON(req),email=validEmail(input.email);assert(typeof input.password==='string'&&input.password.length>0&&input.password.length<=128,'请填写密码。');await rate(env.DB,`login:${ip}`,15,900);await rate(env.DB,`password:${await sha(email)}`,10,900);
-        const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return sessionResponse(env.DB,account);
+        const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return await sessionResponse(env.DB,account);
       }
       assert(user,'请先登录你的账号。',401);
       if(path==='/api/auth/password/set' && req.method==='POST') {
@@ -329,7 +333,7 @@ export function createHandler(assets) {
         const updated=await one(env.DB,'UPDATE users SET password_hash=? WHERE id=? AND password_hash IS ? RETURNING id',hash,user.id,user.password_hash);
         assert(updated,'密码已在其他页面更改，请重新登录。',409);
         await run(env.DB,'DELETE FROM email_codes WHERE email=?',user.email);
-        await run(env.DB,'DELETE FROM sessions WHERE user_id=?',user.id);return sessionResponse(env.DB,{...user,password_hash:hash});
+        await run(env.DB,'DELETE FROM sessions WHERE user_id=?',user.id);return await sessionResponse(env.DB,{...user,password_hash:hash});
       }
       if(path==='/api/auth/logout' && req.method==='POST'){await run(env.DB,'DELETE FROM sessions WHERE token_hash=?',user.token_hash);return json({ok:true},200,{'Set-Cookie':'__Host-jitu=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'});}
       if(path==='/api/models' && req.method==='GET') {const data=await upstreamJSON(await upstream('/api/models',(await requestKey(req,env,user)).key));return json({models:data});}
