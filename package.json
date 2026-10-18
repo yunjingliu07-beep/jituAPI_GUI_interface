@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node server/index.mjs",
+    "db:migrate": "node server/migrate.mjs",
     "build": "node scripts/build.mjs",
-    "test": "node test/app.test.mjs",
+    "test": "node --test test/*.test.mjs",
     "dev": "node scripts/dev.mjs"
   },
   "engines": {

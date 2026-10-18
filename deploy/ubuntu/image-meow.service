@@ -1,0 +1,26 @@
+[Unit]
+Description=image meow website
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=image-meow
+Group=image-meow
+WorkingDirectory=/opt/image-meow
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/image-meow/server.env
+ExecStart=/usr/bin/node --max-old-space-size=768 /opt/image-meow/server/index.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/image-meow
+MemoryMax=1536M
+
+[Install]
+WantedBy=multi-user.target
