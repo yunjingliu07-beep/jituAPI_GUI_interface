@@ -52,7 +52,7 @@ async function sendEmailCode(env,email,purpose,ip) {
   const result={ok:true,message:'如果该邮箱符合条件，验证码将发送到邮箱，请检查收件箱和垃圾邮件。',retryAfter:60};
   if((purpose==='register'&&account)||(purpose==='reset'&&!account))return result;
   const id=uid(),code=newEmailCode(),t=now();
-  await run(env.DB,'DELETE FROM email_codes WHERE (email=? AND purpose=?) OR expires_at<=?',email,purpose,t);
+  await run(env.DB,'DELETE FROM email_codes WHERE (email=? AND purpose=?) OR (expires_at>0 AND expires_at<=?) OR (expires_at=0 AND created_at<?)',email,purpose,t,t-120);
   await run(env.DB,'INSERT INTO email_codes (id,email,purpose,code_hash,expires_at,created_at) VALUES (?,?,?,?,0,?)',id,email,purpose,await codeHash(env,id,email,purpose,code),t);
   const action=purpose==='register'?'注册账号':'重设密码';
   try {
