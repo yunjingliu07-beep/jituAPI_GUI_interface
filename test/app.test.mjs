@@ -60,6 +60,15 @@ test('reset codes are purpose-bound, single-use and invalidate every previous se
   assert.equal((await a.req('/api/auth/password/login',credentials('alice@example.com',null,'replacement-password'))).status,200);
  }finally{mock.restore();a.db.raw.close();}
 });
+test('a concurrent reset cannot be bypassed by an old-password login already in progress',async()=>{
+ const a=app();try{
+  await login(a);const replacement=await passwordHash('replacement-password');
+  const original=a.env.DB;
+  // Simulate the reset completing after login reads the old password, before its session write.
+  a.env.DB={prepare(sql){const q=original.prepare(sql);if(sql.includes('INSERT INTO sessions')){const bind=q.bind;q.bind=(...args)=>{original.raw.prepare('UPDATE users SET password_hash=?').run(replacement);return bind(...args);};}return q;}};
+  assert.equal((await a.req('/api/auth/password/login',credentials('alice@example.com'))).status,401);
+ }finally{a.db.raw.close();}
+});
 test('expired, wrong-purpose, superseded and exhausted codes are rejected; resends are limited',async()=>{
  const mock=mockUpstream(),a=app();try{
   const code=await sendCode(a,mock,'new@example.com');
