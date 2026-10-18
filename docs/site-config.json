@@ -1,0 +1,16 @@
+{
+  "brand": "image meow",
+  "primary_url": "https://imagemeow.top/",
+  "site_project_id": "appgprj_6ad3602eac1c8191beccd3a66e796b09",
+  "custom_domain_id": "appgdom_6ad473a9784c8191a0b264071c58b9cc",
+  "platform_url": "https://jitu-image-workshop.foamydeer513.chatgpt.site",
+  "logo_source": "public/brand-mark.svg",
+  "favicon_url": "/favicon.svg",
+  "hosting": "Sites / Cloudflare Workers",
+  "database_binding": "DB",
+  "custom_domain_status_at_check": "active",
+  "https_status_at_check": "active",
+  "checked_on": "2026-10-18",
+  "dns_configuration_reference": "docs/custom-domain.md",
+  "note": "Informational snapshot only; domain, DNS, and audience are managed outside Git."
+}

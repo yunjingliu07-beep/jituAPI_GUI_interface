@@ -42,7 +42,7 @@ async function sessionResponse(db, user, status = 200) {
   await run(db,'INSERT INTO sessions (token_hash,user_id,expires_at,verified_at) VALUES (?,?,?,0)',await sha(token),user.id,t+604800);
   return json({user:{email:user.email,hasPassword:!!user.password_hash}},status,{'Set-Cookie':`__Host-jitu=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`});
 }
-function keyFrom(req) { const key=(req.headers.get('x-jitu-key')||'').trim(); assert(key.length>=12 && key.length<=512 && /^[\x21-\x7e]+$/.test(key),'请先连接有效的即图 API 密钥。',422); return key; }
+function keyFrom(req) { const key=(req.headers.get('x-jitu-key')||'').trim(); assert(key.length>=12 && key.length<=512 && /^[\x21-\x7e]+$/.test(key),'请先连接有效的生图 API 密钥。',422); return key; }
 export function validateParams(p) {
   assert(['text','edit','mask'].includes(p.mode),'请选择正确的创作模式。');
   assert(typeof p.prompt==='string' && p.prompt.trim() && p.prompt.length<=10000,'请描述你想生成的画面，最多 10000 个字符。');
@@ -61,11 +61,11 @@ export function imageInfo(bytes) {
 }
 async function checkFile(file, mask=false) {assert(file && typeof file.arrayBuffer==='function' && file.size>0,'请选择一张有效的图片。');assert(file.size<=20*1024*1024,'每张图片不能超过 20 MiB。',413);assert(TYPES.has(file.type) && (!mask||file.type==='image/png'),'参考图仅支持 PNG、JPG、WebP；遮罩必须是 PNG。');const content=await file.arrayBuffer();const info=imageInfo(content);assert(info.type===file.type,'图片格式与文件内容不匹配，请重新导出后上传。');return {info,hash:await sha(content)};}
 async function upstream(path,key,options={}) {
-  try {return await fetch(UPSTREAM+path,{...options,headers:{...options.headers,Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(90000)});} catch {throw new AppError('与即图的连接暂时中断。请求可能已被受理，请使用「恢复原提交」核对，避免重复扣费。',504);}
+  try {return await fetch(UPSTREAM+path,{...options,headers:{...options.headers,Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(90000)});} catch {throw new AppError('与生图服务的连接暂时中断。请求可能已被受理，请使用「恢复原提交」核对，避免重复扣费。',504);}
 }
 async function upstreamJSON(response) {
-  let data;try {data=await response.json();} catch {throw new AppError('即图暂时没有返回可读取的结果，请稍后再次查询。',502);}
-  if(!response.ok){const common={400:'请检查尺寸、图片和模型支持的参数。',401:'密钥无效或已作废，请重新连接 API 密钥。',402:'即图余额或密钥额度不足，请充值后重试。',403:'密钥没有可用线路，请使用普通渠道密钥。',404:'模型或任务不存在，请检查模型及密钥所属账号。',409:'原提交与当前内容不一致，请恢复原来的参数和参考图。',410:'图片已超过保留时间，无法继续获取。',413:'上传图片过大，请缩小文件后重试。',429:'请求太频繁，请稍后重试。',502:'上游生成失败，请在即图控制台核对退款。',503:'所选模型暂时没有可用线路。'};throw new AppError(safeMessage(data.error||data.detail||data.message,common[response.status]||'即图服务暂时不可用，请稍后再试。'),response.status===401?422:response.status);}
+  let data;try {data=await response.json();} catch {throw new AppError('生图服务暂时没有返回可读取的结果，请稍后再次查询。',502);}
+  if(!response.ok){const common={400:'请检查尺寸、图片和模型支持的参数。',401:'密钥无效或已作废，请重新连接 API 密钥。',402:'API 供应商账户余额或密钥额度不足，请充值后重试。',403:'密钥没有可用线路，请使用普通渠道密钥。',404:'模型或任务不存在，请检查模型及密钥所属账号。',409:'原提交与当前内容不一致，请恢复原来的参数和参考图。',410:'图片已超过保留时间，无法继续获取。',413:'上传图片过大，请缩小文件后重试。',429:'请求太频繁，请稍后重试。',502:'上游生成失败，请在 API 供应商控制台核对退款。',503:'所选模型暂时没有可用线路。'};throw new AppError(safeMessage(data.error||data.detail||data.message,common[response.status]||'生图服务暂时不可用，请稍后再试。'),response.status===401?422:response.status);}
   return data;
 }
 async function createTask(req,env,user) {
@@ -93,8 +93,8 @@ async function createTask(req,env,user) {
   let data;
   try {data=await upstreamJSON(await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward}));}
   catch(e){const ambiguous=e.status>=500||e.status===429;await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?',ambiguous?'unknown':'failed',e.message,now(),task.id);throw new AppError(e.message,e.status);}
-  const upstreamID=data.id??data.jitu?.request_id;assert(upstreamID!=null,'即图未返回任务编号，请保留原提交并稍后核对。',502);
-  assert(/^[a-zA-Z0-9_-]{1,150}$/.test(String(upstreamID)),'即图返回的任务编号无法识别，请联系支持核对。',502);
+  const upstreamID=data.id??data.jitu?.request_id;assert(upstreamID!=null,'生图服务未返回任务编号，请保留原提交并稍后核对。',502);
+  assert(/^[a-zA-Z0-9_-]{1,150}$/.test(String(upstreamID)),'生图服务返回的任务编号无法识别，请联系支持核对。',502);
   const status=data.data?'succeeded':['queued','running','succeeded','failed','expired'].includes(data.status)?data.status:'queued';
   await run(env.DB,'UPDATE tasks SET upstream_id=?,status=?,error=NULL,updated_at=? WHERE id=?',String(upstreamID),status,now(),task.id);
   return json({task:publicTask({...task,upstream_id:String(upstreamID),status}),result:data.data?data:undefined},202);
@@ -106,7 +106,7 @@ async function taskResult(env,user,id,key) {
   if(task.created_at+43200<now()){await run(env.DB,'UPDATE tasks SET status=?,updated_at=? WHERE id=?','expired',now(),task.id);return {task:publicTask({...task,status:'expired'})};}
   const data=await upstreamJSON(await upstream(`/v1/images/tasks/${encodeURIComponent(task.upstream_id)}`,key));
   assert(['queued','running','succeeded','failed','expired'].includes(data.status),'暂时无法识别生成状态，请稍后再查询。',502);
-  const error=data.status==='failed'?safeMessage(data.error,'生成失败，请在即图控制台核对退款。'):null;
+  const error=data.status==='failed'?safeMessage(data.error,'生成失败，请在 API 供应商控制台核对退款。'):null;
   await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=?,charged=COALESCE(?,charged),balance=COALESCE(?,balance) WHERE id=?',data.status,error,now(),data.result?.jitu?.charged??null,data.result?.jitu?.balance??null,task.id);
   return {task:publicTask({...task,status:data.status,error}),result:data.status==='succeeded'?data.result:undefined};
 }
@@ -122,7 +122,7 @@ async function downloadImage(env,user,id,index,key) {
   if(item.b64_json){assert(typeof item.b64_json==='string' && item.b64_json.length<=90*1024*1024,'图片过大，暂时无法下载。',413);try{const str=atob(item.b64_json);bytes=Uint8Array.from(str,c=>c.charCodeAt(0));}catch{throw new AppError('返回的图片内容无法读取。',502);}type=imageInfo(bytes).type;}
   else if(item.url){let next=safeImageURL(item.url),response;for(let n=0;n<4;n++){response=await fetch(next.toString(),{redirect:'manual',signal:AbortSignal.timeout(90000)});if(response.status>=300&&response.status<400){assert(response.headers.get('location'),'图片下载地址已失效。',502);next=safeImageURL(new URL(response.headers.get('location'),next).toString());continue;}break;}assert(response.ok,'图片地址暂时无法访问，请稍后重试下载。',502);type=(response.headers.get('content-type')||'').split(';')[0];assert(TYPES.has(type),'返回的文件不是可下载的图片。',502);assert(Number(response.headers.get('content-length')||0)<=64*1024*1024,'图片过大，暂时无法下载。',413);const reader=response.body.getReader();let size=0;const chunks=[];for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>64*1024*1024){await reader.cancel();throw new AppError('图片过大，暂时无法下载。',413);}chunks.push(value);}bytes=new Uint8Array(size);let at=0;for(const chunk of chunks){bytes.set(chunk,at);at+=chunk.length;}type=imageInfo(bytes).type;}
   else throw new AppError('这次结果没有可下载的图片。',502);
-  const ext=type==='image/jpeg'?'jpg':type.split('/')[1];return new Response(bytes,{headers:{'Content-Type':type,'Content-Disposition':`attachment; filename="jitu-${id}-${index+1}.${ext}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+  const ext=type==='image/jpeg'?'jpg':type.split('/')[1];return new Response(bytes,{headers:{'Content-Type':type,'Content-Disposition':`attachment; filename="image-meow-${id}-${index+1}.${ext}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
 }
 export function createHandler(assets) {
   return {async fetch(req,env,ctx) {

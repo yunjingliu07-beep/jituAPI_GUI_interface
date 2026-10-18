@@ -1,6 +1,7 @@
 import {readFile,mkdir,writeFile,cp,rm} from 'node:fs/promises';
 const assets={};
-for(const [name,type] of [['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['app.js','application/javascript; charset=utf-8']]) assets['/'+name]={type,content:await readFile('public/'+name,'utf8')};
+for(const [name,type] of [['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['app.js','application/javascript; charset=utf-8'],['brand-mark.svg','image/svg+xml']]) assets['/'+name]={type,content:await readFile('public/'+name,'utf8')};
+assets['/favicon.svg']=assets['/brand-mark.svg'];
 const core=await readFile('worker/core.js','utf8');
 await mkdir('worker',{recursive:true});
 const bundled=core+'\nexport default createHandler('+JSON.stringify(assets)+');\n';
