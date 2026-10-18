@@ -10,6 +10,13 @@ if(r.projectId!=='appgprj_6ad3602eac1c8191beccd3a66e796b09'||!r.counts?.users)pr
 NODE
 [[ -s /etc/letsencrypt/live/imagemeow.top/fullchain.pem && -s /etc/letsencrypt/live/imagemeow.top/privkey.pem ]] || { echo 'Obtain the imagemeow.top certificate first.' >&2; exit 1; }
 openssl x509 -in /etc/letsencrypt/live/imagemeow.top/fullchain.pem -checkend 86400 -noout
+node --input-type=module - <<'NODE'
+import {readFileSync} from 'node:fs';
+import {X509Certificate} from 'node:crypto';
+const certificate=new X509Certificate(readFileSync('/etc/letsencrypt/live/imagemeow.top/fullchain.pem'));
+if(!certificate.checkHost('imagemeow.top'))throw new Error('The certificate does not cover imagemeow.top.');
+console.log('Root certificate hostname verified.');
+NODE
 backup=$(mktemp -d /var/backups/image-meow-domain-XXXXXXXX)
 chmod 0700 "$backup"
 cp /etc/image-meow/server.env "$backup/server.env"
@@ -32,8 +39,8 @@ install -m 0644 deploy/ubuntu/nginx-cutover.conf /etc/nginx/sites-available/imag
 nginx -t
 systemctl restart image-meow
 systemctl reload nginx
-curl --fail --silent --show-error --retry 8 --retry-connrefused --retry-delay 1 \
-    --resolve imagemeow.top:443:127.0.0.1 https://imagemeow.top/healthz
+# reload signals the master; its new TLS workers may not be serving yet.
+bash deploy/ubuntu/check-root-https.sh
 trap - ERR
 echo
 echo "Root domain ready on this server. Backup: $backup"
