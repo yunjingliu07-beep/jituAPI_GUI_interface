@@ -228,6 +228,13 @@ export function createHandler(assets) {
   return {async fetch(req,env,ctx) {
     const path=new URL(req.url).pathname;
     try {
+      // Freeze every application route before any database access during a final migration snapshot.
+      if(path==='/api/migration-status'&&req.method==='GET')return json({mode:env.MIGRATION_MODE==='frozen'?'frozen':'normal',migrationId:env.MIGRATION_ID||null});
+      if(env.MIGRATION_MODE==='frozen'){
+        const headers={'Cache-Control':'no-store','Retry-After':'120'};
+        if(path.startsWith('/api/'))return json({error:'网站正在迁移至新服务器，暂时无法登录或提交生图，请稍后刷新。'},503,headers);
+        return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>image meow · 网站迁移中</title><body><main><h1>网站迁移中</h1><p>正在将服务迁移至新服务器，暂时无法登录或提交生图，请稍后刷新。</p><p>已有账号和历史记录会一并迁移。</p></main></body></html>',{status:503,headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
+      }
       if(!path.startsWith('/api/')){const asset=assets[path==='/'?'/index.html':path];if(!asset)return new Response('页面不存在',{status:404});return new Response(asset.content,{headers:{'Content-Type':asset.type,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self' https://chatgpt.com https://*.chatgpt.com"}});}
       assert(env.DB,'网站数据库尚未就绪，请联系站长完成部署。',503);
       if(!['GET','HEAD'].includes(req.method)) {assert(req.headers.get('origin')===new URL(req.url).origin,'页面已过期，请从本站重新打开后操作。',403);}
