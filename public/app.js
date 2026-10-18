@@ -110,7 +110,7 @@ $('#key-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;bu
 $('#confirm-delete-api').onclick=async e=>{e.currentTarget.disabled=true;try{await api('/api/api-profiles/'+deleteAPIId,{method:'DELETE'});await loadAPIProfiles();closeDialog('#delete-api-dialog');toast('已移除这把 API')}catch(error){$('#delete-api-error').textContent=error.message}finally{e.target.disabled=false}};
 function threadTasks(id){return [...tasks.values()].filter(t=>t.conversationId===id).sort((a,b)=>a.createdAt-b.createdAt)}
 function saveDraft(){const t=current();if(t)t.draft=$('#prompt').value}
-function switchThread(id){saveDraft();activeId=id;openSetting=null;$('#app').classList.remove('menu-open');render();ensureActiveResults();requestAnimationFrame(()=>scrollBottom())}
+function switchThread(id){saveDraft();activeId=id;openSetting=null;closeMobileSidebar();render();ensureActiveResults();requestAnimationFrame(()=>scrollBottom())}
 function render(){if(!current())activeId=newThread();$('#chat-title').textContent=current().title;$('#prompt').value=current().draft;$('#mode').value=current().settings.mode;$('#mask-file').value='';$('#mask-field').hidden=current().settings.mode!=='mask';renderSidebar();renderChat();renderSettings();renderFiles();updateSize();updateComposerState()}
 function renderSidebar(){const q=$('#search').value.trim().toLowerCase();const all=[...threads.values()].sort((a,b)=>Number(!!b.pinned)-Number(!!a.pinned)||b.updatedAt-a.updatedAt);$('#sessions').replaceChildren();let visible=0;
  for(const t of all){const rows=threadTasks(t.id);if(q&&!t.title.toLowerCase().includes(q)&&!rows.some(r=>r.prompt.toLowerCase().includes(q)))continue;visible++;let button=document.createElement('button');button.className='session'+(t.id===activeId?' active':'');button.dataset.session=t.id;if(t.id===activeId)button.setAttribute('aria-current','true');
@@ -139,6 +139,7 @@ function download(url,name){const a=document.createElement('a');a.href=url;a.dow
 async function useImage(task,index){const item=images.get(task.id+':'+index);if(!item?.blob)return;const t=current();t.restoreToken=Symbol('generated-image');t.loadingInputs=false;t.inputRestoreError=null;t.editingTaskId=null;if(t.maskURL)URL.revokeObjectURL(t.maskURL);t.mask=null;t.maskURL=null;if(t.fileURLs.length)t.fileURLs.forEach(URL.revokeObjectURL);t.files=[new File([item.blob],`image-meow-reference.${item.ext}`,{type:item.blob.type})];t.fileURLs=t.files.map(URL.createObjectURL);t.settings.mode='edit';$('#mode').value='edit';$('#mask-field').hidden=true;renderFiles();$('#prompt').value='';t.draft='';updateComposerState();$('#prompt').placeholder='描述想对这张图片做的修改…';$('#prompt').focus();toast('已将这张作品设为参考图，请描述想做的修改。')}
 async function reeditTask(task){
  const t=current();if(t.loadingInputs)return;
+ const selectedFiles=[...t.files],selectedMask=t.mask;
  const requestToken=Symbol('reedit');t.restoreToken=requestToken;t.editingTaskId=task.id;t.inputRestoreError=null;
  t.settings={...defaults(),...task.uiSettings,model:task.model,count:task.n,mode:task.mode};
  if(!task.uiSettings){const [w,h]=task.size.split('x').map(Number);t.settings.ratio='custom';t.settings.customRatioWidth=w;t.settings.customRatioHeight=h;t.settings.resolution=Math.max(w,h)}
@@ -155,7 +156,10 @@ async function reeditTask(task){
    if(threads.get(t.id)!==t||t.restoreToken!==requestToken)return;
    t.files=restored.filter(r=>r.kind==='image').map(r=>r.file);t.mask=restored.find(r=>r.kind==='mask')?.file||null;
   }else if(snapshot){t.files=[...snapshot.files];t.mask=snapshot.mask||null}
-  else if(task.mode!=='text')t.inputRestoreError='这条旧记录未保存原参考图，请重新上传参考图'+(task.mode==='mask'?'和 PNG 遮罩':'')+'。';
+  else if(task.mode!=='text'){
+   t.files=selectedFiles;t.mask=task.mode==='mask'?selectedMask:null;
+   t.inputRestoreError=t.files.length?'这条旧记录未保存原参考图，已保留当前选中的 '+t.files.length+' 张参考图'+(t.mask?'和 PNG 遮罩':'')+'。请核对图片后再生成。':'这条旧记录未保存原参考图，请重新上传参考图'+(task.mode==='mask'?'和 PNG 遮罩':'')+'。';
+  }
   t.fileURLs=t.files.map(URL.createObjectURL);
  }catch(e){if(threads.get(t.id)!==t||t.restoreToken!==requestToken)return;t.files=[];t.fileURLs=[];t.mask=null;t.inputRestoreError='原参考图读取失败：'+e.message+' 请重新点击“重新编辑”重试，或上传替换图片。'}
  finally{if(threads.get(t.id)===t&&t.restoreToken===requestToken){t.loadingInputs=false;if(activeId===t.id){renderFiles();updateComposerState()}}}
@@ -220,8 +224,13 @@ $('#confirm-delete-conversation').onclick=async e=>{e.currentTarget.disabled=tru
 $('#rename-chat').onclick=()=>renameConversation(activeId);$('#rename-form').onsubmit=async e=>{e.preventDefault();const t=threads.get(renameTargetId),title=$('#conversation-name').value.trim();if(!t)return;if(!title){$('#rename-error').textContent='请输入会话名称。';return}const button=e.submitter;button.disabled=true;try{if(user){await ensureRemoteConversation(t);await api('/api/conversations/'+t.id,{method:'PATCH',body:{title}});}t.title=title;renderSidebar();if(activeId===t.id)$('#chat-title').textContent=title;closeDialog('#rename-dialog')}catch(error){$('#rename-error').textContent=error.message}finally{button.disabled=false}};
 document.addEventListener('click',e=>{if(!e.composedPath().some(node=>node instanceof Element&&(node.closest('.session-more')||node.id==='conversation-menu')))closeConversationMenu()});
 $('#conversation-menu').addEventListener('keydown',e=>{const buttons=[...e.currentTarget.querySelectorAll('button')];const index=buttons.indexOf(document.activeElement);if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();buttons[e.key==='Home'?0:e.key==='End'?buttons.length-1:(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus()}});
-$('#mobile-menu').onclick=()=>$('#app').classList.add('menu-open');$('#shade').onclick=()=>$('#app').classList.remove('menu-open');$('#collapse').onclick=()=>{if(innerWidth<=700)$('#app').classList.remove('menu-open');else $('#app').classList.toggle('sidebar-collapsed')};
+const sidebarMedia=matchMedia('(max-width:700px)');
+function syncSidebarState(){const expanded=sidebarMedia.matches?$('#app').classList.contains('menu-open'):!$('#app').classList.contains('sidebar-collapsed');$('#mobile-menu').setAttribute('aria-expanded',String(expanded));$('#collapse').setAttribute('aria-expanded',String(expanded));$('.sidebar').inert=!expanded;}
+function setSidebarOpen(open){if(sidebarMedia.matches)$('#app').classList.toggle('menu-open',open);else{$('#app').classList.toggle('sidebar-collapsed',!open);$('#app').classList.remove('menu-open')}syncSidebarState();$(open?'#collapse':'#mobile-menu').focus();}
+function closeMobileSidebar(){const wasOpen=$('#app').classList.contains('menu-open');$('#app').classList.remove('menu-open');syncSidebarState();if(wasOpen&&sidebarMedia.matches)$('#mobile-menu').focus();}
+$('#mobile-menu').onclick=()=>setSidebarOpen(true);$('#shade').onclick=closeMobileSidebar;$('#collapse').onclick=()=>setSidebarOpen(false);
+sidebarMedia.addEventListener('change',()=>{$('#app').classList.remove('menu-open');syncSidebarState()});syncSidebarState();
 // Let editing inputs keep their values when clicking inside an open parameter menu.
-document.addEventListener('click',e=>{if(!e.composedPath().some(node=>node instanceof Element&&node.matches('.setting'))&&openSetting){openSetting=null;renderSettings()}});document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.popover')){e.preventDefault();const apply=e.target.closest('.popover').querySelector('#apply-ratio,#apply-count');apply?.click();return}if(e.key==='Escape'){closeConversationMenu();openSetting=null;renderSettings();$('#app').classList.remove('menu-open')}});
+document.addEventListener('click',e=>{if(!e.composedPath().some(node=>node instanceof Element&&node.matches('.setting'))&&openSetting){openSetting=null;renderSettings()}});document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.popover')){e.preventDefault();const apply=e.target.closest('.popover').querySelector('#apply-ratio,#apply-count');apply?.click();return}if(e.key==='Escape'){closeConversationMenu();openSetting=null;renderSettings();closeMobileSidebar()}});
 window.addEventListener('beforeunload',e=>{if(pending.size){e.preventDefault();e.returnValue=''}});
 activeId=newThread();render();updateIdentity();try{authConfig=await api('/api/config');selectAuth(authMode);}catch{$('#auth-service-note').textContent='暂时无法确认邮件服务状态，请稍后重试。';}try{const d=await api('/api/me');user=d.user;updateIdentity();if(user){await loadAPIProfiles();await loadHistory();if(!hasSeenGuide())openGuide(false)}else if(!hasSeenGuide())openGuide(false)}catch(e){toast(e.message)}
