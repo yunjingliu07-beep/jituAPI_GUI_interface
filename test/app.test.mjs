@@ -96,6 +96,18 @@ test('reset lookup is generic and mail failures do not leave usable codes or exp
   assert.equal(a.db.raw.prepare('SELECT COUNT(*) AS n FROM email_codes').get().n,0);
  }finally{globalThis.fetch=nativeFetch;a.db.raw.close();}
 });
+test('sending to a second recipient does not delete a first delivery still in progress',async()=>{
+ const a=app(),nativeFetch=globalThis.fetch,letters=[];
+ let releaseFirst,notifyFirst;const firstStarted=new Promise(resolve=>notifyFirst=resolve);
+ globalThis.fetch=async(_url,opts)=>{const mail=JSON.parse(opts.body);letters.push(mail);if(mail.to[0]==='first@example.com'){notifyFirst();await new Promise(resolve=>releaseFirst=resolve);}return Response.json({id:'mail-test'});};
+ try{
+  const first=a.req('/api/auth/code/send',{email:'first@example.com',purpose:'register'});
+  await firstStarted;
+  assert.equal((await a.req('/api/auth/code/send',{email:'second@example.com',purpose:'register'})).status,200);
+  releaseFirst();assert.equal((await first).status,200);
+  for(const mail of letters){const code=mail.text.match(/验证码：(\d{6})/)[1];assert.equal((await a.req('/api/auth/password/register',credentials(mail.to[0],code))).status,201);}
+ }finally{releaseFirst?.();globalThis.fetch=nativeFetch;a.db.raw.close();}
+});
 test('a code can be consumed by at most one concurrent registration',async()=>{
  const mock=mockUpstream(),a=app();try{
   const code=await sendCode(a,mock,'race@example.com');
