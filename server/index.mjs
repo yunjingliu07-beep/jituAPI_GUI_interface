@@ -9,7 +9,7 @@ import {createHandler} from '../worker/core.js';
 import {localBucket} from '../scripts/r2-local.mjs';
 import {openDatabase} from './database.mjs';
 
-export async function createServer({origin,dataDir,vaultKey}){
+export async function createServer({origin,dataDir,vaultKey,resendApiKey,emailFrom}){
  const publicURL=new URL(origin);
  if(publicURL.protocol!=='https:'||publicURL.origin!==origin||publicURL.username||publicURL.password)throw new Error('PUBLIC_ORIGIN must be an HTTPS origin without a trailing slash.');
  if(!/^[a-f0-9]{64}$/.test(vaultKey||''))throw new Error('API_VAULT_KEY must contain 64 lowercase hexadecimal characters.');
@@ -19,7 +19,7 @@ export async function createServer({origin,dataDir,vaultKey}){
   assets['/'+name]={type,content:await readFile(new URL('../public/'+name,import.meta.url),'utf8')};
  }
  assets['/favicon.svg']=assets['/brand-mark.svg'];
- const DB=openDatabase(dataDir),env={DB,API_VAULT_KEY:vaultKey,BUCKET:localBucket(resolve(dataDir,'references'))};
+ const DB=openDatabase(dataDir),env={DB,API_VAULT_KEY:vaultKey,RESEND_API_KEY:resendApiKey,EMAIL_FROM:emailFrom,BUCKET:localBucket(resolve(dataDir,'references'))};
  const app=createHandler(assets);
  const server=http.createServer({maxHeaderSize:16384},async(req,res)=>{
   try{
@@ -65,7 +65,7 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).hr
  if(process.env.JITU_QA==='1')throw new Error('QA mocks cannot be enabled in the production server.');
  const port=Number(process.env.PORT||3000);
  if(!Number.isInteger(port)||port<1||port>65535)throw new Error('Invalid PORT.');
- const server=await createServer({origin:process.env.PUBLIC_ORIGIN,dataDir:process.env.DATA_DIR,vaultKey:process.env.API_VAULT_KEY});
+ const server=await createServer({origin:process.env.PUBLIC_ORIGIN,dataDir:process.env.DATA_DIR,vaultKey:process.env.API_VAULT_KEY,resendApiKey:process.env.RESEND_API_KEY,emailFrom:process.env.EMAIL_FROM});
  server.listen(port,'127.0.0.1',()=>console.log(`image meow listening on 127.0.0.1:${port}`));
  function shutdown(){server.close();setTimeout(()=>process.exit(1),110000).unref();}
  process.once('SIGTERM',shutdown);process.once('SIGINT',shutdown);

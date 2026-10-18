@@ -32,6 +32,48 @@ async function rate(db, key, maximum, seconds) {
   const t = now(); const row = await one(db, 'INSERT INTO rate_limits (key,count,reset_at) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN reset_at<=? THEN 1 ELSE count+1 END,reset_at=CASE WHEN reset_at<=? THEN ? ELSE reset_at END RETURNING count,reset_at', key, t+seconds, t, t, t+seconds);
   assert(row.count <= maximum, `操作太频繁，请在 ${Math.max(1,row.reset_at-t)} 秒后重试。`,429);
 }
+function mailReady(env) { return !!(env.RESEND_API_KEY?.trim() && env.EMAIL_FROM?.trim()); }
+function requireMail(env) { assert(mailReady(env),'邮件服务尚未配置完成，请稍后重试。',503); }
+async function codeHash(env,id,email,purpose,code) {
+  const key=await crypto.subtle.importKey('raw',unhex(env.API_VAULT_KEY||''),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  return hex(await crypto.subtle.sign('HMAC',key,enc.encode(JSON.stringify([id,email,purpose,code]))));
+}
+function newEmailCode() {
+  // Rejection sampling keeps all six-digit codes equally likely.
+  const values=new Uint32Array(1);do{crypto.getRandomValues(values);}while(values[0]>=4294000000);
+  return String(values[0]%1000000).padStart(6,'0');
+}
+async function sendEmailCode(env,email,purpose,ip) {
+  requireMail(env);assert(/^[a-f0-9]{64}$/.test(env.API_VAULT_KEY||''),'账号服务尚未就绪，请稍后重试。',503);
+  await rate(env.DB,`mail-ip:${ip}`,20,3600);
+  await rate(env.DB,`mail-hour:${await sha(email)}`,5,3600);
+  await rate(env.DB,`mail-cooldown:${await sha(email)}`,1,60);
+  const account=await one(env.DB,'SELECT id FROM users WHERE email=?',email);
+  const result={ok:true,message:'如果该邮箱符合条件，验证码将发送到邮箱，请检查收件箱和垃圾邮件。',retryAfter:60};
+  if((purpose==='register'&&account)||(purpose==='reset'&&!account))return result;
+  const id=uid(),code=newEmailCode(),t=now();
+  await run(env.DB,'DELETE FROM email_codes WHERE (email=? AND purpose=?) OR (expires_at>0 AND expires_at<=?) OR (expires_at=0 AND created_at<?)',email,purpose,t,t-120);
+  await run(env.DB,'INSERT INTO email_codes (id,email,purpose,code_hash,expires_at,created_at) VALUES (?,?,?,?,0,?)',id,email,purpose,await codeHash(env,id,email,purpose,code),t);
+  const action=purpose==='register'?'注册账号':'重设密码';
+  try {
+    const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json','Idempotency-Key':`email-code/${id}`},body:JSON.stringify({from:env.EMAIL_FROM,to:[email],subject:`image meow · ${action}验证码`,text:`你正在${action}。\n\n验证码：${code}\n\n验证码 10 分钟内有效，仅可使用一次。请勿向任何人透露。重新发送后，旧验证码失效。若非本人操作，请忽略此邮件。`,html:`<div lang="zh-CN"><h2>image meow · ${action}</h2><p>你的验证码：</p><p style="font-size:32px;letter-spacing:6px;font-weight:bold">${code}</p><p>10 分钟内有效，仅可使用一次。请勿向任何人透露。</p><p>重新发送后，旧验证码失效。若非本人操作，请忽略此邮件。</p></div>`}),signal:AbortSignal.timeout(15000)});
+    const data=await response.json();
+    if(!response.ok||typeof data.id!=='string'||!data.id)throw new Error('Mail rejected');
+    await run(env.DB,'UPDATE email_codes SET expires_at=? WHERE id=?',now()+600,id);
+  } catch {
+    await run(env.DB,'DELETE FROM email_codes WHERE id=?',id);
+    throw new AppError('验证码暂时无法发送，请稍后重试；若持续失败，请联系站长检查邮件服务。',502);
+  }
+  return result;
+}
+async function consumeEmailCode(env,email,purpose,code,ip) {
+  requireMail(env);assert(typeof code==='string'&&/^\d{6}$/.test(code),'请输入邮件中的 6 位验证码。');
+  await rate(env.DB,`code-check-ip:${ip}`,30,900);
+  const row=await one(env.DB,'UPDATE email_codes SET attempts=attempts+1 WHERE id=(SELECT id FROM email_codes WHERE email=? AND purpose=? ORDER BY created_at DESC LIMIT 1) AND expires_at>? AND attempts<5 RETURNING *',email,purpose,now());
+  assert(row,'验证码无效、已过期或尝试次数过多，请重新获取。');
+  const consumed=await one(env.DB,'DELETE FROM email_codes WHERE id=? AND code_hash=? AND expires_at>? AND attempts<=5 RETURNING id',row.id,await codeHash(env,row.id,email,purpose,code),now());
+  assert(consumed,'验证码不正确或已失效，请检查邮件。');
+}
 async function getSession(req, db) {
   const token = (req.headers.get('cookie') || '').match(/(?:^|;\s*)__Host-jitu=([a-f0-9]{64})(?:;|$)/)?.[1];
   if (!token) return null;
@@ -39,7 +81,10 @@ async function getSession(req, db) {
 }
 async function sessionResponse(db, user, status = 200) {
   const token = randomToken(); const t = now();
-  await run(db,'INSERT INTO sessions (token_hash,user_id,expires_at,verified_at) VALUES (?,?,?,0)',await sha(token),user.id,t+604800);
+  // Recheck the password version atomically: an in-flight old-password login must not
+  // create a surviving session after a concurrent password reset has completed.
+  const session=await one(db,'INSERT INTO sessions (token_hash,user_id,expires_at,verified_at) SELECT ?,id,?,0 FROM users WHERE id=? AND password_hash IS ? RETURNING token_hash',await sha(token),t+604800,user.id,user.password_hash||null);
+  assert(session,'密码已更改，请使用新密码重新登录。',401);
   return json({user:publicUser(user)},status,{'Set-Cookie':`__Host-jitu=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`});
 }
 function publicUser(user){return {email:user.email,hasPassword:!!user.password_hash,onboardingCompleted:!!user.onboarding_completed_at};}
@@ -239,23 +284,40 @@ export function createHandler(assets) {
       assert(env.DB,'网站数据库尚未就绪，请联系站长完成部署。',503);
       if(!['GET','HEAD'].includes(req.method)) {assert(req.headers.get('origin')===new URL(req.url).origin,'页面已过期，请从本站重新打开后操作。',403);}
       const ip=req.headers.get('cf-connecting-ip')||'unknown';
-      if(path==='/api/config' && req.method==='GET')return json({authMethods:['password'],registrationEnabled:true,emailCodeEnabled:false});
+      if(path==='/api/config' && req.method==='GET')return json({authMethods:['password'],registrationEnabled:mailReady(env),emailCodeEnabled:mailReady(env),passwordResetEnabled:mailReady(env),registrationRequiresEmailCode:true});
       const user=await getSession(req,env.DB);
       if(path==='/api/me' && req.method==='GET')return json({user:user?publicUser(user):null});
-      if(path.startsWith('/api/auth/code/'))throw new AppError('邮箱验证码功能已暂停，请使用邮箱和密码注册或登录。',403);
+      if(path==='/api/auth/code/send'&&req.method==='POST'){
+        const input=await bodyJSON(req),email=validEmail(input.email);assert(['register','reset'].includes(input.purpose),'请选择注册或找回密码。');
+        return json(await sendEmailCode(env,email,input.purpose,ip));
+      }
+      if(path==='/api/auth/code/login')throw new AppError('请使用邮箱和密码登录。',403);
+      if(path==='/api/auth/password/reset'&&req.method==='POST'){
+        const input=await bodyJSON(req),email=validEmail(input.email);validatePassword(input.password);assert(input.password===input.confirmPassword,'两次输入的密码不一致。');
+        await rate(env.DB,`reset-ip:${ip}`,10,900);
+        const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);
+        const hash=await passwordHash(input.password);
+        await consumeEmailCode(env,email,'reset',input.code,ip);assert(account,'验证码不正确或已失效。');
+        const updated=await one(env.DB,'UPDATE users SET password_hash=? WHERE id=? AND password_hash IS ? RETURNING id',hash,account.id,account.password_hash);
+        assert(updated,'密码已在其他页面更改，请重新获取验证码。',409);
+        await run(env.DB,'DELETE FROM sessions WHERE user_id=?',account.id);
+        return json({ok:true},200,{'Set-Cookie':'__Host-jitu=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'});
+      }
       if(path==='/api/auth/owner')throw new AppError('请使用邮箱和密码注册或登录。',403);
       if(path==='/api/auth/password/register' && req.method==='POST') {
         const input=await bodyJSON(req),email=validEmail(input.email);validatePassword(input.password);
         assert(input.password===input.confirmPassword,'两次输入的密码不一致。');
         await rate(env.DB,`register-ip:${ip}`,10,3600);await rate(env.DB,`register-email:${await sha(email)}`,5,3600);
+        assert(!await one(env.DB,'SELECT id FROM users WHERE email=?',email),'该邮箱已注册，请切换到登录或找回密码。',409);
         const id=uid(),hash=await passwordHash(input.password);
+        await consumeEmailCode(env,email,'register',input.code,ip);
         const created=await one(env.DB,'INSERT INTO users (id,email,password_hash,created_at) VALUES (?,?,?,?) ON CONFLICT(email) DO NOTHING RETURNING id',id,email,hash,now());
-        assert(created,'该邮箱已注册，请切换到登录；忘记密码请联系站长。',409);
-        return sessionResponse(env.DB,{id,email,password_hash:hash},201);
+        assert(created,'该邮箱已注册，请切换到登录或找回密码。',409);
+        return await sessionResponse(env.DB,{id,email,password_hash:hash},201);
       }
       if(path==='/api/auth/password/login' && req.method==='POST') {
         const input=await bodyJSON(req),email=validEmail(input.email);assert(typeof input.password==='string'&&input.password.length>0&&input.password.length<=128,'请填写密码。');await rate(env.DB,`login:${ip}`,15,900);await rate(env.DB,`password:${await sha(email)}`,10,900);
-        const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return sessionResponse(env.DB,account);
+        const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return await sessionResponse(env.DB,account);
       }
       assert(user,'请先登录你的账号。',401);
       if(path==='/api/auth/password/set' && req.method==='POST') {
@@ -270,7 +332,8 @@ export function createHandler(assets) {
         const hash=await passwordHash(input.password);
         const updated=await one(env.DB,'UPDATE users SET password_hash=? WHERE id=? AND password_hash IS ? RETURNING id',hash,user.id,user.password_hash);
         assert(updated,'密码已在其他页面更改，请重新登录。',409);
-        await run(env.DB,'DELETE FROM sessions WHERE user_id=?',user.id);return sessionResponse(env.DB,{...user,password_hash:hash});
+        await run(env.DB,'DELETE FROM email_codes WHERE email=?',user.email);
+        await run(env.DB,'DELETE FROM sessions WHERE user_id=?',user.id);return await sessionResponse(env.DB,{...user,password_hash:hash});
       }
       if(path==='/api/auth/logout' && req.method==='POST'){await run(env.DB,'DELETE FROM sessions WHERE token_hash=?',user.token_hash);return json({ok:true},200,{'Set-Cookie':'__Host-jitu=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'});}
       if(path==='/api/models' && req.method==='GET') {const data=await upstreamJSON(await upstream('/api/models',(await requestKey(req,env,user)).key));return json({models:data});}

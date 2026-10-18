@@ -11,12 +11,15 @@ import {createServer} from '../server/index.mjs';
 import {mockUpstream,PNG} from './fixtures.mjs';
 
 const origin='https://preview.example.com',vaultKey='a'.repeat(64);
-async function launch(dataDir){
- const server=await createServer({origin,dataDir,vaultKey});
+async function launch(dataDir,mail){
+ const server=await createServer({origin,dataDir,vaultKey,resendApiKey:"test-only",emailFrom:"image meow <test@example.com>"});
  server.listen(0,'127.0.0.1');await once(server,'listening');
  const base=`http://127.0.0.1:${server.address().port}`;
  let cookie='';
  return {server,async close(){const closed=once(server,'close');server.close();await closed;},async request(path,{body,method,headers={}}={}){
+  if(path==='/api/auth/password/register'&&body?.email&&!body.code&&headers.origin!=='https://evil.example'){
+   const codeResponse=await this.request('/api/auth/code/send',{body:{email:body.email,purpose:'register'}});assert.equal(codeResponse.status,200);body={...body,code:mail.mail.at(-1).text.match(/验证码：(\d{6})/)[1]};
+  }
   const h={host:new URL(origin).host,origin,'x-real-ip':'203.0.113.7',...(cookie?{cookie}:{}),...headers};
   if(body!==undefined&&!(body instanceof FormData)){h['Content-Type']='application/json';body=JSON.stringify(body);}
   const request=new Request(base+path,{method:method||(body===undefined?'GET':'POST'),headers:h,body});
@@ -48,7 +51,7 @@ test('self-host migration upgrades an existing database without replacing accoun
 });
 
 test('self-host origin checks work behind Nginx and forwarded headers cannot bypass host or rate checks',async()=>{
- const dir=await mkdtemp(join(tmpdir(),'meow-proxy-'));migrate(dir);const app=await launch(dir);
+ const mock=mockUpstream(),dir=await mkdtemp(join(tmpdir(),'meow-proxy-'));migrate(dir);const app=await launch(dir,mock);
  try{
   assert.equal((await app.request('/healthz')).status,200);
   assert.equal((await app.request('/',{headers:{host:'evil.example'}})).status,421);
@@ -63,11 +66,11 @@ test('self-host origin checks work behind Nginx and forwarded headers cannot byp
   assert.equal((await app.request('/server.env')).status,404);
   assert.equal((await app.request('/studio.sqlite')).status,404);
   assert.equal((await app.request('/references/anything')).status,404);
- }finally{await app.close();await rm(dir,{recursive:true,force:true});}
+ }finally{await app.close();mock.restore();await rm(dir,{recursive:true,force:true});}
 });
 
 test('self-host persists encrypted API profiles, conversations and private reference images across restart',async()=>{
- const mock=mockUpstream(),dir=await mkdtemp(join(tmpdir(),'meow-durable-'));migrate(dir);let app=await launch(dir);
+ const mock=mockUpstream(),dir=await mkdtemp(join(tmpdir(),'meow-durable-'));migrate(dir);let app=await launch(dir,mock);
  try{
   const account={email:'durable@example.com',password:'test-password-123',confirmPassword:'test-password-123'};
   assert.equal((await app.request('/api/auth/password/register',{body:account})).status,201);
@@ -79,7 +82,7 @@ test('self-host persists encrypted API profiles, conversations and private refer
   r=await app.request('/api/tasks',{body:form,headers:{'x-api-profile':profile.id,'idempotency-key':crypto.randomUUID()}});
   assert.equal(r.status,202);const task=(await r.json()).task;
   assert.equal(mock.jobs.size,1);
-  await app.close();migrate(dir);app=await launch(dir);
+  await app.close();migrate(dir);app=await launch(dir,mock);
   assert.equal((await app.request('/api/auth/password/login',{body:account})).status,200);
   const profiles=await (await app.request('/api/api-profiles')).json();
   assert.equal(profiles.profiles[0].id,profile.id);assert(!JSON.stringify(profiles).includes('sk-jitu-self-host-test'));
