@@ -119,10 +119,35 @@ async function ensureConversation(db,user,id,title,settings=null) {
   return id;
 }
 function publicConversation(c) {let settings=null;try{settings=JSON.parse(c.settings);}catch{}return {id:c.id,title:c.title,settings,createdAt:c.created_at,updatedAt:c.updated_at};}
+function taskReferences(task) {try{const refs=JSON.parse(task.reference_files);return Array.isArray(refs)?refs:[];}catch{return [];}}
+async function saveTaskReferences(env,user,task,inputs) {
+  if(!inputs.length||taskReferences(task).length)return;
+  assert(env.BUCKET,'参考图存储尚未就绪，请稍后恢复原提交；尚未提交生图请求。',503);
+  const references=[];
+  try {
+    // Persist the exact originals before calling the paid upstream endpoint.
+    for(let index=0;index<inputs.length;index++) {
+      const {file,kind,hash}=inputs[index];
+      const key=`references/${user.id}/${task.id}/${index}-${hash}`;
+      await env.BUCKET.put(key,file,{httpMetadata:{contentType:file.type}});
+      references.push({key,index,kind,name:String(file.name||`${kind}-${index+1}`).slice(0,240),type:file.type,size:file.size});
+    }
+    const serialized=JSON.stringify(references);
+    await run(env.DB,'UPDATE tasks SET reference_files=? WHERE id=? AND user_id=?',serialized,task.id,user.id);
+    task.reference_files=serialized;
+  } catch {throw new AppError('参考图保存失败，请稍后恢复原提交；尚未提交生图请求。',503);}
+}
+async function downloadReference(env,user,id,index) {
+  const task=await one(env.DB,'SELECT * FROM tasks WHERE id=? AND user_id=?',id,user.id);assert(task,'找不到这次创作记录。',404);
+  const reference=taskReferences(task).find(r=>r.index===index);assert(reference,'这张原参考图未保存，请重新上传。',404);
+  assert(env.BUCKET,'参考图存储暂时不可用，请稍后重试。',503);
+  const object=await env.BUCKET.get(reference.key);assert(object,'这张原参考图暂时无法读取，请重新上传或稍后重试。',404);
+  return new Response(object.body,{headers:{'Content-Type':reference.type,'Content-Length':String(reference.size),'Content-Disposition':`attachment; filename="reference-${index+1}.${reference.type==='image/jpeg'?'jpg':reference.type.split('/')[1]}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+}
 async function createTask(req,env,user) {
   const key=keyFrom(req), idem=req.headers.get('idempotency-key');assert(/^[a-f0-9-]{36}$/.test(idem||''),'提交标记无效，请刷新页面。');
   assert(Number(req.headers.get('content-length')||0)<=LIMIT,'上传总大小不能超过 50 MiB。',413);
-  let p, forward, headers={}, fingerprints=[],conversationId=null,uiSettings=null;
+  let p, forward, headers={}, fingerprints=[],conversationId=null,uiSettings=null,referenceInputs=[];
   if((req.headers.get('content-type')||'').startsWith('multipart/form-data')) {
     let form;try {form=await new Response(limitedBody(req.body,LIMIT),{headers:{'Content-Type':req.headers.get('content-type')}}).formData();} catch(e) {if(e instanceof AppError)throw e;throw new AppError('图片上传不完整，请重新选择图片。');}
     p=validateParams(Object.fromEntries(['mode','model','prompt','n','size'].map(k=>[k,form.get(k)])));
@@ -130,8 +155,8 @@ async function createTask(req,env,user) {
     assert(p.mode!=='text','文生图不需要上传图片。');
     const files=[...form.getAll('image'),...form.getAll('image[]')];assert(files.length>=1&&files.length<=16,'请选择 1 至 16 张参考图。');
     const mask=form.get('mask');const total=files.reduce((n,f)=>n+(f.size||0),0)+(mask?.size||0);assert(total+enc.encode(p.prompt).length+65536<=LIMIT,'参考图和遮罩合计过大，请控制在 50 MiB 以内。',413);
-    let first;for(let i=0;i<files.length;i++){const checked=await checkFile(files[i]);if(!i)first=checked.info;fingerprints.push(checked.hash);}
-    if(p.mode==='mask'){assert(mask,'局部编辑需要上传 PNG 遮罩。');const checked=await checkFile(mask,true);assert(first.width&&first.height,'局部编辑的第一张参考图请使用 PNG 或 JPG。');assert(first.width===checked.info.width&&first.height===checked.info.height,'遮罩的宽度和高度必须与第一张参考图完全相同。');fingerprints.push(checked.hash);}
+    let first;for(let i=0;i<files.length;i++){const checked=await checkFile(files[i]);if(!i)first=checked.info;fingerprints.push(checked.hash);referenceInputs.push({file:files[i],kind:'image',hash:checked.hash});}
+    if(p.mode==='mask'){assert(mask,'局部编辑需要上传 PNG 遮罩。');const checked=await checkFile(mask,true);assert(first.width&&first.height,'局部编辑的第一张参考图请使用 PNG 或 JPG。');assert(first.width===checked.info.width&&first.height===checked.info.height,'遮罩的宽度和高度必须与第一张参考图完全相同。');fingerprints.push(checked.hash);referenceInputs.push({file:mask,kind:'mask',hash:checked.hash});}
     else assert(!mask,'图生图模式请不要上传遮罩。');
     forward=new FormData();for(const k of ['model','prompt','n','size'])forward.set(k,String(p[k]));forward.set('async','true');for(let i=0;i<files.length;i++)forward.append(files.length===1?'image':'image[]',files[i],`reference-${i}.${files[i].type.split('/')[1]}`);if(mask)forward.set('mask',mask,'mask.png');
   } else {const input=await bodyJSON(req,20000);p=validateParams(input);conversationId=input.conversationId;uiSettings=cleanSettings(input.uiSettings);assert(p.mode==='text','图生图请通过上传窗口选择参考图片。');forward=JSON.stringify({model:p.model,prompt:p.prompt,n:p.n,size:p.size,async:true});headers['Content-Type']='application/json';}
@@ -147,7 +172,7 @@ async function createTask(req,env,user) {
   const task=await one(env.DB,'SELECT * FROM tasks WHERE user_id=? AND idempotency_key=?',user.id,idem);
   assert(task.fingerprint===fingerprint,'提交内容发生了变化，请恢复原提交内容。',409);
   let data;
-  try {data=await upstreamJSON(await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward}));}
+  try {await saveTaskReferences(env,user,task,referenceInputs);data=await upstreamJSON(await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward}));}
   catch(e){const ambiguous=e.status>=500||e.status===429;await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?',ambiguous?'unknown':'failed',storedError(e),now(),task.id);throw e;}
   const upstreamID=data.id??data.jitu?.request_id;assert(upstreamID!=null,'生图服务未返回任务编号，请保留原提交并稍后核对。',502);
   assert(/^[a-zA-Z0-9_-]{1,150}$/.test(String(upstreamID)),'生图服务返回的任务编号无法识别，请联系支持核对。',502);
@@ -156,7 +181,7 @@ async function createTask(req,env,user) {
   await run(env.DB,'UPDATE tasks SET upstream_id=?,status=?,error=?,updated_at=? WHERE id=?',String(upstreamID),status,error,now(),task.id);
   return json({task:publicTask({...task,upstream_id:String(upstreamID),status,error}),result:data.data?data:undefined},202);
 }
-export function publicTask(t) {const errorInfo=readTaskError(t.error);let uiSettings=null;try{uiSettings=JSON.parse(t.ui_settings);}catch{}return {id:t.id,conversationId:t.conversation_id||t.id,uiSettings,upstreamId:t.upstream_id,idempotencyKey:t.idempotency_key,mode:t.mode,prompt:t.prompt,model:t.model,size:t.size,n:t.count,status:t.created_at+43200<now()&&['succeeded','queued','running'].includes(t.status)?'expired':t.status,error:errorInfo?.reason||null,errorInfo,createdAt:t.created_at,updatedAt:t.updated_at,charged:t.charged,balance:t.balance};}
+export function publicTask(t) {const errorInfo=readTaskError(t.error);let uiSettings=null;try{uiSettings=JSON.parse(t.ui_settings);}catch{}return {id:t.id,conversationId:t.conversation_id||t.id,uiSettings,references:taskReferences(t).map(({index,kind,name,type,size})=>({index,kind,name,type,size})),upstreamId:t.upstream_id,idempotencyKey:t.idempotency_key,mode:t.mode,prompt:t.prompt,model:t.model,size:t.size,n:t.count,status:t.created_at+43200<now()&&['succeeded','queued','running'].includes(t.status)?'expired':t.status,error:errorInfo?.reason||null,errorInfo,createdAt:t.created_at,updatedAt:t.updated_at,charged:t.charged,balance:t.balance};}
 async function taskResult(env,user,id,key) {
   const task=await one(env.DB,'SELECT * FROM tasks WHERE id=? AND user_id=?',id,user.id);assert(task,'找不到这次创作记录。',404);
   if(!task.upstream_id)return {task:publicTask(task)};
@@ -236,6 +261,8 @@ export function createHandler(assets) {
       }
       if(path==='/api/tasks' && req.method==='GET'){const records=await env.DB.prepare('SELECT * FROM tasks WHERE user_id=? ORDER BY created_at DESC,rowid DESC LIMIT 500').bind(user.id).all();return json({tasks:records.results.map(publicTask)});}
       if(path==='/api/tasks' && req.method==='POST')return await createTask(req,env,user);
+      const referenceMatch=path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/references\/(\d+)$/);
+      if(referenceMatch&&req.method==='GET') {await rate(env.DB,`reference:${user.id}`,120,60);return await downloadReference(env,user,referenceMatch[1],Number(referenceMatch[2]));}
       const match=path.match(/^\/api\/tasks\/([a-f0-9-]{36})(?:\/images\/(\d+))?$/);
       if(match && req.method==='GET') {await rate(env.DB,`query:${user.id}`,180,60);const key=keyFrom(req);if(match[2]!=null)return await downloadImage(env,user,match[1],Number(match[2]),key);return json(await taskResult(env,user,match[1],key));}
       throw new AppError('没有找到这个功能。',404);

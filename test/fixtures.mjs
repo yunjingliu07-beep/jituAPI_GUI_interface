@@ -15,3 +15,5 @@ export function mockUpstream(){
  };
  return {calls,jobs,mail,restore(){globalThis.fetch=nativeFetch;}};
 }
+
+export function mockBucket(){const objects=new Map();return {objects,async put(key,body){objects.set(key,new Uint8Array(await new Response(body).arrayBuffer()));},async get(key){const bytes=objects.get(key);return bytes?{body:bytes.slice()}:null;}};}

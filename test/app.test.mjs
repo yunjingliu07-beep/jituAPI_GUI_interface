@@ -1,8 +1,8 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {createHandler,sha,passwordHash,passwordMatches,validateParams,imageInfo,safeImageURL} from '../worker/core.js';
-import {localDB} from '../scripts/d1-local.mjs';import {mockUpstream,PNG} from './fixtures.mjs';
+import {localDB} from '../scripts/d1-local.mjs';import {mockUpstream,mockBucket,PNG} from './fixtures.mjs';
 const origin='https://studio.example';
-function app(){const db=localDB();const env={DB:db,RESEND_API_KEY:'test-only',EMAIL_FROM:'Studio <test@example.com>'};const h=createHandler({});let cookie='';return {env,db,async req(path,body,extra={}){const headers={origin,'cf-connecting-ip':'203.0.113.9',...extra.headers};if(cookie)headers.cookie=cookie;let payload=body;if(body!==undefined&&!(body instanceof FormData)){headers['Content-Type']='application/json';payload=JSON.stringify(body);}const req=new Request(origin+path,{method:body===undefined?'GET':'POST',headers,body:payload});const res=await h.fetch(req,env,{});const set=res.headers.get('set-cookie');if(set)cookie=set.split(';')[0];return res;},setCookie(v){cookie=v;},getCookie(){return cookie;}};}
+function app(){const db=localDB();const env={DB:db,BUCKET:mockBucket(),RESEND_API_KEY:'test-only',EMAIL_FROM:'Studio <test@example.com>'};const h=createHandler({});let cookie='';return {env,db,async req(path,body,extra={}){const headers={origin,'cf-connecting-ip':'203.0.113.9',...extra.headers};if(cookie)headers.cookie=cookie;let payload=body;if(body!==undefined&&!(body instanceof FormData)){headers['Content-Type']='application/json';payload=JSON.stringify(body);}const req=new Request(origin+path,{method:body===undefined?'GET':'POST',headers,body:payload});const res=await h.fetch(req,env,{});const set=res.headers.get('set-cookie');if(set)cookie=set.split(';')[0];return res;},setCookie(v){cookie=v;},getCookie(){return cookie;}};}
 async function login(a,email='alice@example.com'){const body={email,password:'test-password-123',confirmPassword:'test-password-123'};const r=await a.req('/api/auth/password/register',body);return r.status===409?a.req('/api/auth/password/login',body):r;}
 const params={mode:'text',model:'gpt-image-2.5-flare',prompt:'一只戴围巾的小猫',size:'1024x1024',n:1};
 const keyHeaders={'x-jitu-key':'sk-jitu-test-only-key'};
@@ -90,4 +90,25 @@ test('submission and asynchronous failure details survive subsequent history rea
 test('ratio to pixel conversion supports 9:16, custom proportions and rejects unusable dimensions',async()=>{
  const {requestedSize}=await import('../public/parameters.js');assert.equal(requestedSize({ratio:'9:16',resolution:2048}).size,'1152x2048');assert.equal(requestedSize({ratio:'custom',customRatioWidth:7,customRatioHeight:5,resolution:2048}).size,'2048x1464');assert.equal(requestedSize({ratio:'custom',customRatioWidth:1.5,customRatioHeight:1,resolution:4096}).size,'4096x2728');
  for(const [w,h] of [[0,1],[-1,1],[NaN,1],[1,Infinity],[10000,1]])assert.throws(()=>requestedSize({ratio:'custom',customRatioWidth:w,customRatioHeight:h,resolution:1024}));
+});
+
+test('original references and mask are saved before generation and restored with owner-only access',async()=>{
+ const mock=mockUpstream(),a=app();try{await login(a);const f=new FormData();for(const [k,v]of Object.entries({...params,mode:'mask'}))f.set(k,String(v));f.append('image[]',new File([PNG],'original-one.png',{type:'image/png'}));f.append('image[]',new File([PNG],'original-two.png',{type:'image/png'}));f.set('mask',new File([PNG],'original-mask.png',{type:'image/png'}));const idem=crypto.randomUUID();
+ let res=await a.req('/api/tasks',f,{headers:{...keyHeaders,'idempotency-key':idem}});assert.equal(res.status,202);const task=(await res.json()).task;assert.equal(task.references.length,3);assert.deepEqual(task.references.map(r=>r.kind),['image','image','mask']);assert.deepEqual(task.references.map(r=>r.name),['original-one.png','original-two.png','original-mask.png']);assert.equal(a.env.BUCKET.objects.size,3);assert(!JSON.stringify(task.references).includes('references/'));assert(!JSON.stringify(task.references).includes('key'));
+ const ownerCookie=a.getCookie();for(let i=0;i<3;i++){res=await a.req(`/api/tasks/${task.id}/references/${i}`);assert.equal(res.status,200);assert.equal(res.headers.get('content-type'),'image/png');assert.equal(res.headers.get('cache-control'),'private, no-store');assert.deepEqual(Buffer.from(await res.arrayBuffer()),PNG)}
+ // An original remains available independently of the upstream result's 12-hour retention.
+ a.db.raw.prepare('UPDATE tasks SET created_at=? WHERE id=?').run(1,task.id);assert.equal((await a.req(`/api/tasks/${task.id}/references/0`)).status,200);
+ const history=(await (await a.req('/api/tasks')).json()).tasks;assert.equal(history[0].references[2].kind,'mask');
+ assert.equal((await a.req(`/api/tasks/${task.id}/references/17`)).status,404);
+ await login(a,'reference-other@example.com');assert.equal((await a.req(`/api/tasks/${task.id}/references/0`)).status,404);a.setCookie('');assert.equal((await a.req(`/api/tasks/${task.id}/references/0`)).status,401);a.setCookie(ownerCookie);
+ // Same submission does not create extra reference objects or upstream jobs.
+ res=await a.req('/api/tasks',f,{headers:{...keyHeaders,'idempotency-key':idem}});assert.equal(res.status,200);assert.equal(a.env.BUCKET.objects.size,3);assert.equal(mock.jobs.size,1);
+ }finally{mock.restore();a.db.raw.close()}
+});
+
+test('reference storage failure prevents paid upstream calls and preserves the original submission for retry',async()=>{
+ const mock=mockUpstream(),a=app();try{await login(a);const f=new FormData();for(const [k,v]of Object.entries({...params,mode:'edit'}))f.set(k,String(v));f.set('image',new File([PNG],'reference.png',{type:'image/png'}));const idem=crypto.randomUUID();a.env.BUCKET={async put(){throw new Error('storage unavailable')}};
+ let res=await a.req('/api/tasks',f,{headers:{...keyHeaders,'idempotency-key':idem}});assert.equal(res.status,503);assert.match((await res.json()).error,/尚未提交生图请求/);assert.equal(mock.calls.length,0);let history=(await (await a.req('/api/tasks')).json()).tasks;assert.equal(history[0].status,'unknown');assert.equal(history[0].references.length,0);
+ a.env.BUCKET=mockBucket();res=await a.req('/api/tasks',f,{headers:{...keyHeaders,'idempotency-key':idem}});assert.equal(res.status,202);const task=(await res.json()).task;assert.equal(task.references.length,1);assert.equal(mock.jobs.size,1);
+ }finally{mock.restore();a.db.raw.close()}
 });

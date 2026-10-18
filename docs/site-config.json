@@ -12,5 +12,6 @@
   "https_status_at_check": "active",
   "checked_on": "2026-10-18",
   "dns_configuration_reference": "docs/custom-domain.md",
-  "note": "Informational snapshot only; domain, DNS, and audience are managed outside Git."
+  "note": "Informational snapshot only; domain, DNS, and audience are managed outside Git.",
+  "file_storage_binding": "BUCKET"
 }
