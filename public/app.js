@@ -88,6 +88,7 @@ function download(url,name){const a=document.createElement('a');a.href=url;a.dow
 async function useImage(task,index){const item=images.get(task.id+':'+index);if(!item?.blob)return;const t=current();t.restoreToken=Symbol('generated-image');t.loadingInputs=false;t.inputRestoreError=null;t.editingTaskId=null;if(t.maskURL)URL.revokeObjectURL(t.maskURL);t.mask=null;t.maskURL=null;if(t.fileURLs.length)t.fileURLs.forEach(URL.revokeObjectURL);t.files=[new File([item.blob],`image-meow-reference.${item.ext}`,{type:item.blob.type})];t.fileURLs=t.files.map(URL.createObjectURL);t.settings.mode='edit';$('#mode').value='edit';$('#mask-field').hidden=true;renderFiles();$('#prompt').value='';t.draft='';updateComposerState();$('#prompt').placeholder='描述想对这张图片做的修改…';$('#prompt').focus();toast('已将这张作品设为参考图，请描述想做的修改。')}
 async function reeditTask(task){
  const t=current();if(t.loadingInputs)return;
+ const selectedFiles=[...t.files],selectedMask=t.mask;
  const requestToken=Symbol('reedit');t.restoreToken=requestToken;t.editingTaskId=task.id;t.inputRestoreError=null;
  t.settings={...defaults(),...task.uiSettings,model:task.model,count:task.n,mode:task.mode};
  if(!task.uiSettings){const [w,h]=task.size.split('x').map(Number);t.settings.ratio='custom';t.settings.customRatioWidth=w;t.settings.customRatioHeight=h;t.settings.resolution=Math.max(w,h)}
@@ -104,7 +105,10 @@ async function reeditTask(task){
    if(threads.get(t.id)!==t||t.restoreToken!==requestToken)return;
    t.files=restored.filter(r=>r.kind==='image').map(r=>r.file);t.mask=restored.find(r=>r.kind==='mask')?.file||null;
   }else if(snapshot){t.files=[...snapshot.files];t.mask=snapshot.mask||null}
-  else if(task.mode!=='text')t.inputRestoreError='这条旧记录未保存原参考图，请重新上传参考图'+(task.mode==='mask'?'和 PNG 遮罩':'')+'。';
+  else if(task.mode!=='text'){
+   t.files=selectedFiles;t.mask=task.mode==='mask'?selectedMask:null;
+   t.inputRestoreError=t.files.length?'这条旧记录未保存原参考图，已保留当前选中的 '+t.files.length+' 张参考图'+(t.mask?'和 PNG 遮罩':'')+'。请核对图片后再生成。':'这条旧记录未保存原参考图，请重新上传参考图'+(task.mode==='mask'?'和 PNG 遮罩':'')+'。';
+  }
   t.fileURLs=t.files.map(URL.createObjectURL);
  }catch(e){if(threads.get(t.id)!==t||t.restoreToken!==requestToken)return;t.files=[];t.fileURLs=[];t.mask=null;t.inputRestoreError='原参考图读取失败：'+e.message+' 请重新点击“重新编辑”重试，或上传替换图片。'}
  finally{if(threads.get(t.id)===t&&t.restoreToken===requestToken){t.loadingInputs=false;if(activeId===t.id){renderFiles();updateComposerState()}}}
