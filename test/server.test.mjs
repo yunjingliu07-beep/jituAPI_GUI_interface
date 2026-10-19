@@ -8,7 +8,7 @@ import {request as httpRequest} from 'node:http';
 import {DatabaseSync} from 'node:sqlite';
 import {migrate,databaseFile} from '../server/database.mjs';
 import {createServer} from '../server/index.mjs';
-import {mockUpstream,PNG} from './fixtures.mjs';
+import {mockUpstream,PNG,seedInvitation} from './fixtures.mjs';
 
 const origin='https://preview.example.com',vaultKey='a'.repeat(64);
 async function launch(dataDir,mail){
@@ -18,7 +18,8 @@ async function launch(dataDir,mail){
  let cookie='';
  return {server,async close(){const closed=once(server,'close');server.close();await closed;},async request(path,{body,method,headers={}}={}){
   if(path==='/api/auth/password/register'&&body?.email&&!body.code&&headers.origin!=='https://evil.example'){
-   const codeResponse=await this.request('/api/auth/code/send',{body:{email:body.email,purpose:'register'}});assert.equal(codeResponse.status,200);body={...body,code:mail.mail.at(-1).text.match(/验证码：(\d{6})/)[1]};
+   const seedDB=new DatabaseSync(databaseFile(dataDir));const inviteCode=seedInvitation(seedDB);seedDB.close();body={...body,inviteCode};
+   const codeResponse=await this.request('/api/auth/code/send',{body:{email:body.email,purpose:'register',inviteCode}});assert.equal(codeResponse.status,200);body={...body,code:mail.mail.at(-1).text.match(/验证码：(\d{6})/)[1]};
   }
   const h={host:new URL(origin).host,origin,'x-real-ip':'203.0.113.7',...(cookie?{cookie}:{}),...headers};
   if(body!==undefined&&!(body instanceof FormData)){h['Content-Type']='application/json';body=JSON.stringify(body);}
@@ -49,6 +50,8 @@ test('self-host migration upgrades an existing database without replacing accoun
   assert(upgraded.prepare('PRAGMA table_info(users)').all().some(c=>c.name==='last_seen_release'));
   assert(upgraded.prepare('PRAGMA table_info(tasks)').all().some(c=>c.name==='references_ready'));
   assert.equal(upgraded.prepare('SELECT COUNT(*) AS n FROM account_storage').get().n,0);
+  assert.equal(upgraded.prepare('SELECT role FROM users').get().role,'member');
+  assert.equal(upgraded.prepare('SELECT COUNT(*) AS n FROM registration_invitations').get().n,0);
   upgraded.close();
  }finally{await rm(dir,{recursive:true,force:true});}
 });
@@ -77,6 +80,8 @@ test('self-host persists encrypted API profiles, conversations and private refer
  try{
   const account={email:'durable@example.com',password:'test-password-123',confirmPassword:'test-password-123'};
   assert.equal((await app.request('/api/auth/password/register',{body:account})).status,201);
+  const roleDB=new DatabaseSync(databaseFile(dir));roleDB.prepare("UPDATE users SET role='admin' WHERE email=?").run(account.email);roleDB.close();
+  const inviteResponse=await app.request('/api/admin/invites',{body:{count:2}});assert.equal(inviteResponse.status,201);const invites=(await inviteResponse.json()).invitations;
   let r=await app.request('/api/api-profiles',{body:{name:'我的 API',key:'sk-jitu-self-host-test'}});
   assert.equal(r.status,201);const profile=(await r.json()).profile;
   const form=new FormData(),conversationId=crypto.randomUUID();
@@ -89,7 +94,9 @@ test('self-host persists encrypted API profiles, conversations and private refer
   assert.equal((await app.request('/api/updates/seen',{body:{version:release}})).status,200);
   await app.close();migrate(dir);app=await launch(dir,mock);
   assert.equal((await app.request('/api/auth/password/login',{body:account})).status,200);
-  assert.equal((await (await app.request('/api/me')).json()).user.lastSeenRelease,release);
+  const me=(await (await app.request('/api/me')).json()).user;assert.equal(me.lastSeenRelease,release);assert.equal(me.role,'admin');
+  const savedInvites=await (await app.request('/api/admin/invites')).json();assert.equal(savedInvites.total,2);assert(savedInvites.invitations.some(i=>i.id===invites[0].id));
+  assert.equal((await app.request('/api/auth/code/send',{body:{email:'invited-after-restart@example.com',purpose:'register',inviteCode:invites[0].code}})).status,200);
   const storage=await (await app.request('/api/storage')).json();assert(storage.usedBytes>0);assert.equal(storage.limitBytes,1000000000);
   const profiles=await (await app.request('/api/api-profiles')).json();
   assert.equal(profiles.profiles[0].id,profile.id);assert(!JSON.stringify(profiles).includes('sk-jitu-self-host-test'));

@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {createHandler,sha,passwordHash,passwordMatches,validateParams,imageInfo,safeImageURL} from '../worker/core.js';
-import {localDB} from '../scripts/d1-local.mjs';import {mockUpstream,mockBucket,PNG} from './fixtures.mjs';
+import {localDB} from '../scripts/d1-local.mjs';import {mockUpstream,mockBucket,PNG,seedInvitation} from './fixtures.mjs';
 const origin='https://studio.example';
 function app(){const db=localDB();const env={DB:db,API_VAULT_KEY:'1'.repeat(64),BUCKET:mockBucket(),RESEND_API_KEY:'test-only',EMAIL_FROM:'Studio <test@example.com>'};const h=createHandler({});let cookie='';return {env,db,async req(path,body,extra={}){const headers={origin,'cf-connecting-ip':'203.0.113.9',...extra.headers};if(cookie)headers.cookie=cookie;let payload=body;if(body!==undefined&&!(body instanceof FormData)){headers['Content-Type']='application/json';payload=JSON.stringify(body);}const req=new Request(origin+path,{method:extra.method||(body===undefined?'GET':'POST'),headers,body:payload});const res=await h.fetch(req,env,{});const set=res.headers.get('set-cookie');if(set)cookie=set.split(';')[0];return res;},setCookie(v){cookie=v;},getCookie(){return cookie;}};}
 // General feature tests sign in to a pre-existing account; mail onboarding is tested separately.
@@ -8,11 +8,13 @@ async function login(a,email='alice@example.com'){
  if(!a.db.raw.prepare('SELECT id FROM users WHERE email=?').get(email))a.db.raw.prepare('INSERT INTO users(id,email,password_hash,created_at) VALUES(?,?,?,?)').run(crypto.randomUUID(),email,await passwordHash('test-password-123'),Math.floor(Date.now()/1000));
  return a.req('/api/auth/password/login',{email,password:'test-password-123'});
 }
+const invitations=new Map();
+function inviteFor(a,email){const code=seedInvitation(a.db.raw);invitations.set(email.trim().toLowerCase(),code);return code;}
 async function sendCode(a,mock,email,purpose='register'){
- const r=await a.req('/api/auth/code/send',{email,purpose});assert.equal(r.status,200,await r.text());
+ const r=await a.req('/api/auth/code/send',{email,purpose,...(purpose==='register'?{inviteCode:inviteFor(a,email)}:{})});assert.equal(r.status,200,await r.text());
  return mock.mail.at(-1).text.match(/验证码：(\d{6})/)[1];
 }
-const credentials=(email,code,password='test-password-123')=>({email,code,password,confirmPassword:password});
+const credentials=(email,code,password='test-password-123')=>({email,code,password,confirmPassword:password,inviteCode:invitations.get(email.trim().toLowerCase())});
 
 const params={mode:'text',model:'gpt-image-2.5-flare',prompt:'一只戴围巾的小猫',size:'1024x1024',n:1};
 const keyHeaders={'x-jitu-key':'sk-jitu-test-only-key'};
@@ -72,7 +74,7 @@ test('a concurrent reset cannot be bypassed by an old-password login already in 
 test('expired, wrong-purpose, superseded and exhausted codes are rejected; resends are limited',async()=>{
  const mock=mockUpstream(),a=app();try{
   const code=await sendCode(a,mock,'new@example.com');
-  assert.equal((await a.req('/api/auth/code/send',{email:'new@example.com',purpose:'register'})).status,429);assert.equal(mock.mail.length,1);
+  assert.equal((await a.req('/api/auth/code/send',{email:'new@example.com',purpose:'register',inviteCode:invitations.get('new@example.com')})).status,429);assert.equal(mock.mail.length,1);
   assert.equal((await a.req('/api/auth/password/reset',credentials('new@example.com',code))).status,400);
   a.db.raw.prepare('UPDATE email_codes SET expires_at=1').run();
   assert.equal((await a.req('/api/auth/password/register',credentials('new@example.com',code))).status,400);
@@ -92,7 +94,7 @@ test('reset lookup is generic and mail failures do not leave usable codes or exp
  const a=app(),nativeFetch=globalThis.fetch;try{
   const generic=await a.req('/api/auth/code/send',{email:'missing@example.com',purpose:'reset'});assert.equal(generic.status,200);assert.equal(a.db.raw.prepare('SELECT COUNT(*) AS n FROM email_codes').get().n,0);
   globalThis.fetch=async()=>Response.json({message:'secret-provider-error'},{status:403});
-  const failed=await a.req('/api/auth/code/send',{email:'new@example.com',purpose:'register'});assert.equal(failed.status,502);assert(!JSON.stringify(await failed.json()).includes('secret-provider-error'));
+  const failed=await a.req('/api/auth/code/send',{email:'new@example.com',purpose:'register',inviteCode:inviteFor(a,'new@example.com')});assert.equal(failed.status,502);assert(!JSON.stringify(await failed.json()).includes('secret-provider-error'));
   assert.equal(a.db.raw.prepare('SELECT COUNT(*) AS n FROM email_codes').get().n,0);
  }finally{globalThis.fetch=nativeFetch;a.db.raw.close();}
 });
@@ -101,9 +103,9 @@ test('sending to a second recipient does not delete a first delivery still in pr
  let releaseFirst,notifyFirst;const firstStarted=new Promise(resolve=>notifyFirst=resolve);
  globalThis.fetch=async(_url,opts)=>{const mail=JSON.parse(opts.body);letters.push(mail);if(mail.to[0]==='first@example.com'){notifyFirst();await new Promise(resolve=>releaseFirst=resolve);}return Response.json({id:'mail-test'});};
  try{
-  const first=a.req('/api/auth/code/send',{email:'first@example.com',purpose:'register'});
+  const first=a.req('/api/auth/code/send',{email:'first@example.com',purpose:'register',inviteCode:inviteFor(a,'first@example.com')});
   await firstStarted;
-  assert.equal((await a.req('/api/auth/code/send',{email:'second@example.com',purpose:'register'})).status,200);
+  assert.equal((await a.req('/api/auth/code/send',{email:'second@example.com',purpose:'register',inviteCode:inviteFor(a,'second@example.com')})).status,200);
   releaseFirst();assert.equal((await first).status,200);
   for(const mail of letters){const code=mail.text.match(/验证码：(\d{6})/)[1];assert.equal((await a.req('/api/auth/password/register',credentials(mail.to[0],code))).status,201);}
  }finally{releaseFirst?.();globalThis.fetch=nativeFetch;a.db.raw.close();}
@@ -113,7 +115,7 @@ test('a code can be consumed by at most one concurrent registration',async()=>{
   const code=await sendCode(a,mock,'race@example.com');
   const responses=await Promise.all([a.req('/api/auth/password/register',credentials('race@example.com',code)),a.req('/api/auth/password/register',credentials('race@example.com',code))]);
   assert.equal(responses.filter(r=>r.status===201).length,1);
-  assert.equal(a.db.raw.prepare('SELECT COUNT(*) AS n FROM users').get().n,1);
+  assert.equal(a.db.raw.prepare("SELECT COUNT(*) AS n FROM users WHERE role<>'owner'").get().n,1);
  }finally{mock.restore();a.db.raw.close();}
 });
 test('registration validates password and confirmation; CSRF and unauthenticated access blocked',async()=>{

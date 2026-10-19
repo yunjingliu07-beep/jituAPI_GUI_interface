@@ -77,7 +77,7 @@ async function consumeEmailCode(env,email,purpose,code,ip) {
 async function getSession(req, db) {
   const token = (req.headers.get('cookie') || '').match(/(?:^|;\s*)__Host-jitu=([a-f0-9]{64})(?:;|$)/)?.[1];
   if (!token) return null;
-  return one(db,'SELECT users.id,users.email,users.password_hash,users.onboarding_completed_at,users.selected_api_id,users.last_seen_release,sessions.verified_at,sessions.token_hash FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?',await sha(token),now());
+  return one(db,'SELECT users.id,users.email,users.password_hash,users.onboarding_completed_at,users.selected_api_id,users.last_seen_release,users.role,sessions.verified_at,sessions.token_hash FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?',await sha(token),now());
 }
 async function sessionResponse(db, user, status = 200) {
   const token = randomToken(); const t = now();
@@ -87,7 +87,7 @@ async function sessionResponse(db, user, status = 200) {
   assert(session,'密码已更改，请使用新密码重新登录。',401);
   return json({user:publicUser(user)},status,{'Set-Cookie':`__Host-jitu=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`});
 }
-function publicUser(user){return {email:user.email,hasPassword:!!user.password_hash,onboardingCompleted:!!user.onboarding_completed_at,lastSeenRelease:user.last_seen_release||null};}
+function publicUser(user){return {email:user.email,role:user.role||'member',hasPassword:!!user.password_hash,onboardingCompleted:!!user.onboarding_completed_at,lastSeenRelease:user.last_seen_release||null};}
 function validateAPIKey(raw){const key=String(raw||'').trim();assert(key.length>=12&&key.length<=512&&/^[\x21-\x7e]+$/.test(key),'请填写完整有效的 API 密钥。',422);return key;}
 function keyFrom(req){return validateAPIKey(req.headers.get('x-jitu-key'));}
 async function vaultKey(env){assert(/^[a-f0-9]{64}$/.test(env.API_VAULT_KEY||''),'API 密钥存储尚未就绪，请稍后重试。',503);return crypto.subtle.importKey('raw',unhex(env.API_VAULT_KEY),'AES-GCM',false,['encrypt','decrypt']);}
@@ -115,9 +115,73 @@ async function cleanDeletedConversation(env,user,id,check=async()=>{}){
   return true;
  }catch{return false;}
 }
+const INVITATION_ERROR='邀请码无效、已使用、已过期或已撤销，请联系管理员获取新的邀请码。';
+function invitationCode(raw){
+ assert(typeof raw==='string'&&raw.length<=96,'请输入管理员提供的邀请码。');
+ const code=raw.trim().toUpperCase().replace(/^MEOW[-\s]*/,'').replace(/[-\s]/g,'');
+ assert(/^[A-F0-9]{32}$/.test(code),INVITATION_ERROR);return code;
+}
+async function usableInvitation(env,raw){
+ const code=invitationCode(raw);
+ const invitation=await one(env.DB,"SELECT i.id FROM registration_invitations i JOIN users issuer ON issuer.id=i.created_by WHERE i.code_hash=? AND i.used_by IS NULL AND i.revoked_at IS NULL AND i.expires_at>? AND issuer.role IN ('owner','admin')",await sha(code),now());
+ assert(invitation,INVITATION_ERROR);return invitation;
+}
+function requireAdministrator(user){assert(['owner','admin'].includes(user.role),'此功能仅限管理员使用。',403);}
+function requireOwner(user){assert(user.role==='owner','只有站长可以管理管理员。',403);}
+function publicInvitation(i){
+ return {id:i.id,hint:i.code_hint,label:i.label,createdAt:i.created_at,expiresAt:i.expires_at,createdBy:i.creator_email,usedBy:i.member_email||null,usedAt:i.used_at,revokedAt:i.revoked_at,status:i.used_by?'used':i.revoked_at?'revoked':i.expires_at<=now()?'expired':'available'};
+}
+async function invitationAdmin(req,env,user,path){
+ requireAdministrator(user);
+ if(path==='/api/admin/invites'&&req.method==='GET'){
+  const raw=new URL(req.url).searchParams.get('offset')||'0';assert(/^\d{1,7}$/.test(raw),'分页参数无效。');const offset=Number(raw),scope=user.role==='owner'?'':' WHERE i.created_by=?',args=user.role==='owner'?[]:[user.id];
+  const count=await one(env.DB,`SELECT COUNT(*) AS n FROM registration_invitations i${scope}`,...args);
+  const rows=await env.DB.prepare(`SELECT i.*,issuer.email AS creator_email,member.email AS member_email FROM registration_invitations i JOIN users issuer ON issuer.id=i.created_by LEFT JOIN users member ON member.id=i.used_by${scope} ORDER BY i.created_at DESC,i.id DESC LIMIT 50 OFFSET ?`).bind(...args,offset).all();
+  return json({invitations:rows.results.map(publicInvitation),total:count.n,offset,nextOffset:offset+rows.results.length<count.n?offset+rows.results.length:null});
+ }
+ if(path==='/api/admin/invites'&&req.method==='POST'){
+  const input=await bodyJSON(req);assert(Number.isInteger(input.count)&&input.count>=1&&input.count<=20,'每次可生成 1 至 20 个邀请码。');
+  const days=input.expiresInDays??7;assert([1,7,30].includes(days),'有效期请选择 1、7 或 30 天。');
+  assert(input.label==null||(typeof input.label==='string'&&input.label.trim().length<=60),'备注最多填写 60 个字符。');
+  await rate(env.DB,`invite-generate:${user.id}`,20,3600);
+  const t=now(),expires=t+days*86400,items=[],statements=[];
+  for(let i=0;i<input.count;i++){
+   const raw=randomToken(16).toUpperCase(),code='MEOW-'+raw.match(/.{4}/g).join('-'),id=uid(),hint=`MEOW-${raw.slice(0,4)}-…-${raw.slice(-4)}`;
+   statements.push(env.DB.prepare("INSERT INTO registration_invitations(id,code_hash,code_hint,label,created_by,created_at,expires_at) SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND role IN ('owner','admin'))").bind(id,await sha(raw),hint,(input.label||'').trim(),user.id,t,expires,user.id));
+   items.push({id,code,hint,expiresAt:expires});
+  }
+  const results=await env.DB.batch(statements);assert(results.every(r=>r.meta?.changes===1),'管理员权限已变更，请刷新页面。',403);
+  return json({invitations:items},201);
+ }
+ const revoke=path.match(/^\/api\/admin\/invites\/([a-f0-9-]{36})\/revoke$/);
+ if(revoke&&req.method==='POST'){
+  const row=await one(env.DB,"UPDATE registration_invitations SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND used_by IS NULL AND (?='owner' OR created_by=?) AND EXISTS(SELECT 1 FROM users WHERE id=? AND role IN ('owner','admin')) RETURNING id",now(),revoke[1],user.role,user.id,user.id);
+  assert(row,'找不到可撤销的邀请码；已使用的邀请码不能撤销。',404);return json({ok:true});
+ }
+ if(path==='/api/admin/members'&&req.method==='GET'){
+  requireOwner(user);const rows=await env.DB.prepare("SELECT id,email,role,created_at FROM users WHERE role IN ('owner','admin') ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END,created_at,id").all();
+  return json({members:rows.results.map(u=>({id:u.id,email:u.email,role:u.role,createdAt:u.created_at}))});
+ }
+ if(path==='/api/admin/members'&&req.method==='POST'){
+  requireOwner(user);const input=await bodyJSON(req),email=validEmail(input.email);assert(['grant','revoke'].includes(input.action),'请选择添加或撤销管理员。');
+  await rate(env.DB,`admin-members:${user.id}`,30,900);
+  const member=await one(env.DB,'SELECT id,email,role FROM users WHERE email=?',email);assert(member,'该邮箱尚未注册，请先使用邀请码完成注册。',404);assert(member.role!=='owner','站长身份不能在网页中修改。',403);
+  if(input.action==='grant')await run(env.DB,"UPDATE users SET role='admin' WHERE id=? AND role<>'owner'",member.id);
+  else await env.DB.batch([
+   env.DB.prepare("UPDATE users SET role='member' WHERE id=? AND role<>'owner'").bind(member.id),
+   env.DB.prepare('UPDATE registration_invitations SET revoked_at=COALESCE(revoked_at,?) WHERE created_by=? AND used_by IS NULL').bind(now(),member.id)
+  ]);
+  return json({ok:true});
+ }
+ throw new AppError('没有找到这个管理功能。',404);
+}
+
 // GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
 export const RELEASES = [{
+ version:'2026.10.19.2',date:'2026-10-19',title:'邀请码注册与管理员管理',
+ changes:['新账号注册需要管理员提供的一次性邀请码，并继续验证邮箱；已注册账号的登录和找回密码不受影响。','管理员可批量生成、复制和撤销自己创建的邀请码，支持 1、7 或 30 天有效期。','站长可添加或撤销其他已注册成员的管理员权限，并管理全站邀请码。撤销管理员后，其未使用的邀请码同时失效。']
+},{
  version:'2026.10.19.1',date:'2026-10-19',title:'更新日志与个人存储空间',
  changes:['新增更新日志：每次版本更新后首次访问会显示更新内容，也可随时从侧栏查看。','每个账号提供 1 GB 聊天与上传素材空间，可在「我的账号」查看用量。','空间不足时自动清理最早的聊天及其参考图、遮罩，并保留清理通知；正在生成的会话暂不清理。','请及时下载生成结果；生图供应商的结果图片仍按原规则保留约 12 小时。']
 }];
@@ -389,12 +453,13 @@ export function createHandler(assets) {
       assert(env.DB,'网站数据库尚未就绪，请联系站长完成部署。',503);
       if(!['GET','HEAD'].includes(req.method)) {assert(req.headers.get('origin')===new URL(req.url).origin,'页面已过期，请从本站重新打开后操作。',403);}
       const ip=req.headers.get('cf-connecting-ip')||'unknown';
-      if(path==='/api/config' && req.method==='GET')return json({authMethods:['password'],registrationEnabled:mailReady(env),emailCodeEnabled:mailReady(env),passwordResetEnabled:mailReady(env),registrationRequiresEmailCode:true});
+      if(path==='/api/config' && req.method==='GET')return json({authMethods:['password'],registrationEnabled:mailReady(env),emailCodeEnabled:mailReady(env),passwordResetEnabled:mailReady(env),registrationRequiresEmailCode:true,registrationRequiresInvitation:true});
       const user=await getSession(req,env.DB);
       if(path==='/api/updates'&&req.method==='GET')return json({current:RELEASES[0],releases:RELEASES});
       if(path==='/api/me' && req.method==='GET')return json({user:user?publicUser(user):null});
       if(path==='/api/auth/code/send'&&req.method==='POST'){
         const input=await bodyJSON(req),email=validEmail(input.email);assert(['register','reset'].includes(input.purpose),'请选择注册或找回密码。');
+        if(input.purpose==='register'){requireMail(env);await rate(env.DB,`invite-check:${ip}`,30,900);await usableInvitation(env,input.inviteCode);}
         return json(await sendEmailCode(env,email,input.purpose,ip));
       }
       if(path==='/api/auth/code/login')throw new AppError('请使用邮箱和密码登录。',403);
@@ -415,9 +480,11 @@ export function createHandler(assets) {
         assert(input.password===input.confirmPassword,'两次输入的密码不一致。');
         await rate(env.DB,`register-ip:${ip}`,10,3600);await rate(env.DB,`register-email:${await sha(email)}`,5,3600);
         assert(!await one(env.DB,'SELECT id FROM users WHERE email=?',email),'该邮箱已注册，请切换到登录或找回密码。',409);
+        requireMail(env);const invitation=await usableInvitation(env,input.inviteCode);
         const id=uid(),hash=await passwordHash(input.password);
         await consumeEmailCode(env,email,'register',input.code,ip);
-        const created=await one(env.DB,'INSERT INTO users (id,email,password_hash,created_at) VALUES (?,?,?,?) ON CONFLICT(email) DO NOTHING RETURNING id',id,email,hash,now());
+        let created;
+        try{created=await one(env.DB,'INSERT INTO users (id,email,password_hash,created_at,invitation_id) VALUES (?,?,?,?,?) ON CONFLICT(email) DO NOTHING RETURNING id',id,email,hash,now(),invitation.id);}catch(e){if(String(e.message).includes('INVITATION_UNAVAILABLE'))throw new AppError(INVITATION_ERROR,409);throw e;}
         assert(created,'该邮箱已注册，请切换到登录或找回密码。',409);
         return await sessionResponse(env.DB,{id,email,password_hash:hash},201);
       }
@@ -426,6 +493,7 @@ export function createHandler(assets) {
         const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return await sessionResponse(env.DB,account);
       }
       assert(user,'请先登录你的账号。',401);
+      if(path.startsWith('/api/admin/'))return await invitationAdmin(req,env,user,path);
       if(path==='/api/updates/seen'&&req.method==='POST'){const input=await bodyJSON(req);assert(input.version===RELEASES[0].version,'网站已有新版本，请刷新后查看。',409);await run(env.DB,'UPDATE users SET last_seen_release=? WHERE id=?',input.version,user.id);return json({ok:true});}
       if(path==='/api/storage'&&req.method==='GET')return json(await maintainAccountStorage(env,user));
       if(path==='/api/storage/ack'&&req.method==='POST'){const input=await bodyJSON(req);assert(Number.isSafeInteger(input.revision)&&input.revision>0,'清理通知编号无效。');await run(env.DB,'UPDATE account_storage SET acknowledged_revision=MAX(acknowledged_revision,?) WHERE user_id=? AND notice_revision>=?',input.revision,user.id,input.revision);return json({ok:true});}
