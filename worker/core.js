@@ -219,6 +219,9 @@ async function invitationAdmin(req,env,user,path){
 // GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
 export const RELEASES = [{
+ version:'2026.10.19.3',date:'2026-10-19',title:'删除会话弹窗样式优化',
+ changes:['移除删除会话确认弹窗右上角「×」周围的绿色方框。']
+},{
  version:'2026.10.19.2',date:'2026-10-19',title:'邀请码注册与管理员管理',
  changes:['新账号注册需要管理员提供的一次性邀请码，并继续验证邮箱；已注册账号的登录和找回密码不受影响。','管理员可批量生成、复制和撤销自己创建的邀请码，支持 1、7 或 30 天有效期。','站长可添加或撤销其他已注册成员的管理员权限，并管理全站邀请码。撤销管理员后，其未使用的邀请码同时失效。']
 },{
