@@ -2,6 +2,8 @@
 
 正式访问地址：**https://imagemeow.top/**
 
+**https://imagemeow.top/** 的DNS域名解析已经绑定到阿里云的Ubuntu服务器上，打开该网址会自动跳转到托管在Ubuntu服务器运行的网站，chatGPT提供的site仅作为源码备份使用，访问时会显示网页冻结，备份中
+
 香港 Ubuntu 24.04 自托管部署见 [部署指南](docs/ubuntu-deployment.md)。当前主站已切换到 Ubuntu；正式入口为 `npm start`，与本地预览脚本分开。
 
 GitHub 与 Sites 保持同一份完整源码，Sites 作为保留迁移暂停状态的源码副本；后续可直接从 Sites 项目发起修改。发布 Sites 不更新生产服务器，代码同步也不复制用户数据。双端维护和服务器手动更新方式见 [源码同步说明](docs/source-sync.md)。
