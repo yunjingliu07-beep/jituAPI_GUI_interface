@@ -23,7 +23,7 @@ $$('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
 $$('dialog').forEach(d=>d.addEventListener('click',e=>{const r=d.getBoundingClientRect();if(d.id==='help-dialog'&&!hasSeenGuide())return;if(e.target===d&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))d.close()}));
 function newThread(){const id=crypto.randomUUID();threads.set(id,{id,title:'新的生图会话',settings:defaults(),draft:'',files:[],fileURLs:[],mask:null,maskURL:null,createdAt:Date.now()/1000,updatedAt:Date.now()/1000,local:true,pinned:false});return id}
 function clearImageCache(){images.forEach(v=>{if(v.url)URL.revokeObjectURL(v.url)});images.clear();$('#lightbox').close();$('#lightbox-image').removeAttribute('src')}
-function resetWorkspace(){epoch++;guideAcknowledgedThisVisit=false;$('#key-form').reset();$('#api-key').type='password';$('#toggle-key').textContent='显示';for(const id of ['#key-dialog','#delete-api-dialog','#rename-dialog','#delete-conversation-dialog'])if($(id).open)$(id).close();apiProfiles=[];selectedApiId=null;apiKey='';deletedConversationIds.clear();closeConversationMenu();clearTimeout(pollTimer);pollTimer=null;polling=false;querying=new Set();threads.forEach(t=>{t.fileURLs.forEach(URL.revokeObjectURL);if(t.maskURL)URL.revokeObjectURL(t.maskURL)});inputSnapshots.clear();threads=new Map();tasks=new Map();runtimes=new Map();pending=new Map();clearImageCache();activeId=newThread();$('#prompt').value='';$('#mask-file').value='';render();renderAPIProfiles()}
+function resetWorkspace(){epoch++;storageState=null;updateDialogContext=null;storageDialogContext=null;for(const id of ['#updates-dialog','#storage-notice-dialog'])if($(id).open)$(id).close();renderStorage();guideAcknowledgedThisVisit=false;$('#key-form').reset();$('#api-key').type='password';$('#toggle-key').textContent='显示';for(const id of ['#key-dialog','#delete-api-dialog','#rename-dialog','#delete-conversation-dialog'])if($(id).open)$(id).close();apiProfiles=[];selectedApiId=null;apiKey='';deletedConversationIds.clear();closeConversationMenu();clearTimeout(pollTimer);pollTimer=null;polling=false;querying=new Set();threads.forEach(t=>{t.fileURLs.forEach(URL.revokeObjectURL);if(t.maskURL)URL.revokeObjectURL(t.maskURL)});inputSnapshots.clear();threads=new Map();tasks=new Map();runtimes=new Map();pending=new Map();clearImageCache();activeId=newThread();$('#prompt').value='';$('#mask-file').value='';render();renderAPIProfiles()}
 async function api(path,opts={}){
  const requestEpoch=epoch;const headers={...opts.headers};const profileId=opts.profileId||selectedApiId;if(profileId)headers['X-API-Profile']=profileId;else if(apiKey&&!apiKey.startsWith('profile:'))headers['X-Jitu-Key']=apiKey;const {profileId:_profileId,...requestOptions}=opts;opts=requestOptions;
  if(opts.body&&!(opts.body instanceof FormData)){headers['Content-Type']='application/json';opts={...opts,body:JSON.stringify(opts.body)}}
@@ -40,7 +40,63 @@ function updateIdentity(){
  $('#current-password-field').hidden=!user?.hasPassword;$('#current-password').required=!!user?.hasPassword;$('#new-password-label').textContent=user?.hasPassword?'设置新密码':'设置登录密码';
  $('#connection-label').textContent=apiProfiles.find(p=>p.id===selectedApiId)?.name||'连接 API';$('#switch-api').title=selectedApiId?'当前 API：'+(apiProfiles.find(p=>p.id===selectedApiId)?.name||'已选择'):'添加或切换 API';$('#header-key').classList.toggle('connected',!!apiKey);renderSidebar();updateComposerState();
 }
-$('#account-open').onclick=()=>openDialog(user?'#account-dialog':'#auth-dialog');$('#switch-api').onclick=$('#header-key').onclick=()=>{if(requireUser()){renderAPIProfiles();openDialog('#key-dialog')}};$('#help-open').onclick=()=>openGuide(false);
+$('#account-open').onclick=()=>{if(user)refreshStorage();openDialog(user?'#account-dialog':'#auth-dialog')};$('#switch-api').onclick=$('#header-key').onclick=()=>{if(requireUser()){renderAPIProfiles();openDialog('#key-dialog')}};$('#help-open').onclick=()=>openGuide(false);
+let announcementsReady=false;
+let updateFeed=null,storageState=null,storageBusy=false,updateDialogContext=null,storageDialogContext=null;
+const seenUpdatesThisVisit=new Set(),seenNoticesThisVisit=new Set();
+const releaseOwner=()=>user?.email||'anonymous';
+const releaseKey=()=>updateFeed?`${releaseOwner()}:${updateFeed.current.version}`:'';
+function formatStorage(bytes){if(bytes<1000000)return (bytes/1000).toFixed(bytes<1000?1:0)+' KB';if(bytes<1000000000)return (bytes/1000000).toFixed(1)+' MB';return (bytes/1000000000).toFixed(2)+' GB';}
+function renderStorage(){
+ const s=storageState;$('#storage-usage').textContent=user?(s?`${formatStorage(s.usedBytes)} / 1 GB`:'正在读取…'):'登录后查看';
+ $('#storage-progress').value=s?Math.min(s.usedBytes,s.limitBytes):0;$('#storage-progress').max=s?.limitBytes||1000000000;
+ $('#storage-status').textContent=s?.cleanupError||'聊天、参考图和遮罩共用 1 GB。空间不足时按创建时间清理最早会话，包括已置顶的会话；正在生成的会话暂不清理。清理后无法恢复，请及时下载重要图片。';
+ $('#storage-banner').hidden=!user||!(s?.notice||s?.cleanupError);
+ $('#storage-banner-text').textContent=s?.notice?`空间整理提醒：已自动移除 ${s.notice.conversations} 段最早的聊天及其上传素材。${s.pendingCleanup?'部分文件仍待清理。':''}`:s?.cleanupError||'';
+}
+async function refreshStorage(syncHistory=true){
+ if(!user||storageBusy)return;storageBusy=true;const token=epoch;
+ try{const previous=storageState?.notice?.revision;const d=await api('/api/storage');if(token!==epoch)return;storageState=d;renderStorage();if(syncHistory&&d.notice&&d.notice.revision!==previous)await loadHistory();queueAnnouncements();}
+ catch(e){if(token===epoch&&e.status!==429){$('#storage-status').textContent=e.message;}}
+ finally{storageBusy=false;}
+}
+function showUpdates(){
+ if(!updateFeed)return;const holder=$('#updates-list');holder.replaceChildren();
+ for(const release of updateFeed.releases){const section=document.createElement('section');section.className='release-entry';const label=document.createElement('p');label.className='eyebrow';label.textContent=`${release.date} · ${release.version}`;const title=document.createElement('h3');title.textContent=release.title;const list=document.createElement('ul');for(const change of release.changes){const item=document.createElement('li');item.textContent=change;list.append(item);}section.append(label,title,list);holder.append(section);}
+ updateDialogContext={owner:releaseOwner(),version:updateFeed.current.version,epoch};openDialog('#updates-dialog');
+}
+function queueAnnouncements(){
+ if(!announcementsReady||document.querySelector('dialog[open]'))return;
+ if(updateFeed){let seen=user?.lastSeenRelease===updateFeed.current.version;
+  if(!user){try{seen=localStorage.getItem('image-meow-release-seen')===updateFeed.current.version;}catch{}}
+  if(!seen&&!seenUpdatesThisVisit.has(releaseKey())){showUpdates();return;}
+ }
+ if(user&&storageState?.notice){const key=`${user.email}:${storageState.notice.revision}`;if(!seenNoticesThisVisit.has(key))showStorageNotice();}
+}
+function showStorageNotice(){
+ const notice=storageState?.notice;if(!user||!notice)return;
+ $('#storage-notice-content').textContent=`你的聊天与上传素材已触及 1 GB 空间上限，系统已自动移除最早的 ${notice.conversations} 段聊天（含 ${notice.tasks} 条创作记录）及其参考图、遮罩。${storageState.pendingCleanup?'部分文件仍在等待清理，请稍后再提交。':''}清理后无法恢复；账号和 API 配置会保留。`;
+ storageDialogContext={owner:user.email,revision:notice.revision,epoch};openDialog('#storage-notice-dialog');
+}
+$('#updates-open').onclick=async()=>{if(!updateFeed){try{updateFeed=await api('/api/updates');}catch(e){toast(e.message);return;}}showUpdates();};
+$('#storage-notice-open').onclick=()=>{if(storageState?.notice)showStorageNotice();else if(user)openDialog('#account-dialog');};
+$('#storage-refresh').onclick=()=>refreshStorage();
+$('#updates-dialog').addEventListener('close',async()=>{
+ const context=updateDialogContext;updateDialogContext=null;if(!context)return;
+ seenUpdatesThisVisit.add(`${context.owner}:${context.version}`);
+ if(context.epoch!==epoch||context.owner!==releaseOwner())return;
+ if(user){try{await api('/api/updates/seen',{method:'POST',body:{version:context.version}});if(context.epoch===epoch&&context.owner===releaseOwner())user.lastSeenRelease=context.version;}catch(e){toast('更新阅读状态暂未保存，下次打开时可能再次提示。');}}
+ else{try{localStorage.setItem('image-meow-release-seen',context.version);}catch{}}
+ queueAnnouncements();
+});
+$('#storage-notice-dialog').addEventListener('close',async()=>{
+ const context=storageDialogContext;storageDialogContext=null;if(!context)return;seenNoticesThisVisit.add(`${context.owner}:${context.revision}`);
+ if(context.epoch!==epoch||context.owner!==user?.email)return;
+ try{await api('/api/storage/ack',{method:'POST',body:{revision:context.revision}});if(context.epoch===epoch&&storageState?.notice?.revision===context.revision){storageState.notice=null;renderStorage();}}catch{toast('清理通知的阅读状态暂未保存，下次打开时会再次提醒。');}queueAnnouncements();
+});
+$$('dialog').forEach(d=>d.addEventListener('close',()=>setTimeout(queueAnnouncements,0)));
+setInterval(()=>{if(user&&document.visibilityState==='visible')refreshStorage();},60000);
+document.addEventListener('visibilitychange',()=>{if(user&&document.visibilityState==='visible')refreshStorage();});
 let authConfig={emailCodeEnabled:false},codeSending=false;
 const codeCooldowns=new Map();
 const emailCodeKey=()=>$('#auth-email').value.trim().toLowerCase();
@@ -103,7 +159,7 @@ function openGuide(afterAPI=false){guideAfterAPI=afterAPI;$('#guide-error').text
 async function finishGuide(){if(user){await api('/api/onboarding/complete',{method:'POST',body:{}});user.onboardingCompleted=true;}guideAcknowledgedThisVisit=true;try{localStorage.setItem('image-meow-guide-v1','seen')}catch{}}
 $('#guide-continue').onclick=async e=>{e.currentTarget.disabled=true;try{await finishGuide();closeDialog('#help-dialog');if(guideAfterAPI&&!apiKey){renderAPIProfiles();openDialog('#key-dialog')}guideAfterAPI=false;}catch(error){$('#guide-error').textContent=error.message}finally{e.target.disabled=false}};
 $('#help-dialog').addEventListener('cancel',e=>{if(!hasSeenGuide())e.preventDefault()});
-async function afterSignIn(){await loadAPIProfiles();await loadHistory();if(!user.onboardingCompleted&&guideAcknowledgedThisVisit)await finishGuide();if(!hasSeenGuide())openGuide(!apiKey);else if(!apiKey){renderAPIProfiles();openDialog('#key-dialog')}}
+async function afterSignIn(){announcementsReady=false;try{await loadAPIProfiles();await refreshStorage(false);await loadHistory();if(!user.onboardingCompleted&&guideAcknowledgedThisVisit)await finishGuide();if(!hasSeenGuide())openGuide(!apiKey);else if(!apiKey){renderAPIProfiles();openDialog('#key-dialog')}}finally{announcementsReady=true;queueAnnouncements();}}
 async function loadAPIProfiles(){if(!user)return;const token=epoch;const data=await api('/api/api-profiles');if(token!==epoch)return;apiProfiles=data.profiles;selectedApiId=data.selectedId;apiKey=selectedApiId?'profile:'+selectedApiId:'';runtimes.forEach(r=>{r.paused=false;r.failures=0;r.nextQueryAt=0});renderAPIProfiles();updateIdentity();startPolling();ensureActiveResults();ensureRecentThumbnails();}
 function renderAPIProfiles(){const holder=$('#api-profile-list');holder.replaceChildren();if(!apiProfiles.length){const p=document.createElement('p');p.className='api-list-empty';p.textContent='还没有保存的 API，请在下方添加第一把密钥。';holder.append(p);return}for(const profile of apiProfiles){const row=document.createElement('div');row.className='api-profile-row'+(selectedApiId===profile.id?' selected':'');const use=document.createElement('button');use.type='button';use.className='api-use';use.setAttribute('aria-label','使用 API：'+profile.name);use.innerHTML=icon(selectedApiId===profile.id?'check':'key')+`<span>${esc(profile.name)}<small>${esc(profile.keyHint)}${selectedApiId===profile.id?' · 当前使用':''}</small></span>`;use.onclick=async()=>{use.disabled=true;try{await api('/api/api-profiles/'+profile.id,{method:'POST',body:{}});selectedApiId=profile.id;apiKey='profile:'+profile.id;runtimes.forEach(r=>{r.paused=false;r.failures=0;r.nextQueryAt=0});updateIdentity();renderAPIProfiles();closeDialog('#key-dialog');startPolling();ensureActiveResults();toast('已切换到 '+profile.name)}catch(e){$('#key-error').textContent=e.message}finally{use.disabled=false}};const remove=document.createElement('button');remove.type='button';remove.className='api-remove';remove.setAttribute('aria-label','移除 API：'+profile.name);remove.innerHTML=icon('close');remove.onclick=()=>{deleteAPIId=profile.id;$('#delete-api-name').textContent=profile.name;$('#delete-api-error').textContent='';openDialog('#delete-api-dialog')};row.append(use,remove);holder.append(row)}}
 $('#key-form').onsubmit=async e=>{e.preventDefault();const button=e.submitter;button.disabled=true;$('#key-error').textContent='';try{const d=await api('/api/api-profiles',{method:'POST',body:{name:$('#api-name').value.trim(),key:$('#api-key').value.trim()}});$('#api-key').value='';$('#api-key').type='password';$('#toggle-key').textContent='显示';$('#api-name').value='';await loadAPIProfiles();selectedApiId=d.profile.id;apiKey='profile:'+d.profile.id;updateIdentity();closeDialog('#key-dialog');renderChat();startPolling();ensureActiveResults();toast('API 已加密保存，当前使用 '+d.profile.name)}catch(error){$('#key-error').textContent=error.message}finally{button.disabled=false}};
@@ -207,7 +263,7 @@ async function submitGeneration(submission){if(!requireKey())return;const t=thre
  const token=epoch;runtime(local.id).submitting=true;local.status='submitting';inputSnapshots.set(submission.id,{files:[...submission.files],mask:submission.mask});t.editingTaskId=null;t.inputRestoreError=null;pending.set(submission.id,submission);if(t.title==='新的生图会话')t.title=submission.p.prompt.slice(0,60);t.updatedAt=Date.now()/1000;if(activeId===t.id){$('#chat-title').textContent=t.title;renderChat();updateComposerState();requestAnimationFrame(scrollBottom)}renderSidebar();
  try{let body=submission.p;if(body.mode!=='text'){body=new FormData();Object.entries(submission.p).forEach(([k,v])=>body.set(k,k==='uiSettings'?JSON.stringify(v):String(v)));submission.files.forEach(f=>body.append(submission.files.length===1?'image':'image[]',f));if(submission.mask)body.set('mask',submission.mask)}const d=await api('/api/tasks',{method:'POST',profileId:apiProfiles.some(p=>p.id===submission.apiProfileId)?submission.apiProfileId:selectedApiId,headers:{'Idempotency-Key':submission.id},body});if(token!==epoch)return;tasks.delete(local.id);runtimes.delete(local.id);pending.delete(submission.id);submission.localId=d.task.id;if(d.result)runtime(d.task.id).result=d.result;upsertTask(d.task);if(activeId===t.id){renderChat();updateComposerState();requestAnimationFrame(scrollBottom)}startPolling();if(d.task.status==='succeeded')loadImage(d.task,0);}
  catch(e){if(token!==epoch)return;const ambiguous=!e.status||e.status>=500||[429,409].includes(e.status);local.status=ambiguous?'unknown':'failed';local.error=e.message;local.errorInfo=e.errorInfo;runtime(local.id).submitting=false;if(!ambiguous)pending.delete(submission.id);upsertTask(local);await loadHistory()}
- finally{if(token===epoch){runtime(submission.localId).submitting=false;updateComposerState()}}
+ finally{if(token===epoch){runtime(submission.localId).submitting=false;updateComposerState();await refreshStorage()}}
 }
 $('#generation-form').onsubmit=e=>{e.preventDefault();if(!requireKey())return;if(threadTasks(activeId).some(t=>running(t))){toast('当前会话仍在处理，可以新建另一个生图会话。');return}try{const submission=captureSubmission();current().draft='';$('#prompt').value='';submitGeneration(submission)}catch(e){toast(e.message)}};
 $('#prompt').addEventListener('input',saveDraft);$('#prompt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('#generation-form').requestSubmit()}});
@@ -220,7 +276,7 @@ $('#pin-conversation').onclick=async()=>{const t=threads.get(menuConversationId)
 $('#menu-rename').onclick=()=>renameConversation(menuConversationId);
 $('#menu-delete').onclick=()=>{const t=threads.get(menuConversationId);if(!t)return;deleteTargetId=t.id;$('#delete-conversation-name').textContent=t.title;$('#delete-conversation-error').textContent='';closeConversationMenu();openDialog('#delete-conversation-dialog')};
 function removeLocalConversation(id){const t=threads.get(id);if(!t)return;t.fileURLs.forEach(URL.revokeObjectURL);if(t.maskURL)URL.revokeObjectURL(t.maskURL);threads.delete(id);for(const task of [...tasks.values()])if(task.conversationId===id){tasks.delete(task.id);runtimes.delete(task.id);querying.delete(task.id);pending.delete(task.idempotencyKey);inputSnapshots.delete(task.idempotencyKey);for(const [key,item]of images)if(key.startsWith(task.id+':')){if(item.url)URL.revokeObjectURL(item.url);images.delete(key);}}}
-$('#confirm-delete-conversation').onclick=async e=>{e.currentTarget.disabled=true;try{const t=threads.get(deleteTargetId);if(!t)return;if(!t.local)await api('/api/conversations/'+t.id,{method:'DELETE'});deletedConversationIds.add(t.id);removeLocalConversation(t.id);if(activeId===t.id)activeId=[...threads.keys()][0]||newThread();closeDialog('#delete-conversation-dialog');render();ensureActiveResults();toast('会话已删除')}catch(error){$('#delete-conversation-error').textContent=error.message}finally{e.target.disabled=false}};
+$('#confirm-delete-conversation').onclick=async e=>{e.currentTarget.disabled=true;try{const t=threads.get(deleteTargetId);if(!t)return;if(!t.local)await api('/api/conversations/'+t.id,{method:'DELETE'});deletedConversationIds.add(t.id);removeLocalConversation(t.id);if(activeId===t.id)activeId=[...threads.keys()][0]||newThread();closeDialog('#delete-conversation-dialog');render();ensureActiveResults();await refreshStorage(false);toast('会话已删除')}catch(error){$('#delete-conversation-error').textContent=error.message}finally{e.target.disabled=false}};
 $('#rename-chat').onclick=()=>renameConversation(activeId);$('#rename-form').onsubmit=async e=>{e.preventDefault();const t=threads.get(renameTargetId),title=$('#conversation-name').value.trim();if(!t)return;if(!title){$('#rename-error').textContent='请输入会话名称。';return}const button=e.submitter;button.disabled=true;try{if(user){await ensureRemoteConversation(t);await api('/api/conversations/'+t.id,{method:'PATCH',body:{title}});}t.title=title;renderSidebar();if(activeId===t.id)$('#chat-title').textContent=title;closeDialog('#rename-dialog')}catch(error){$('#rename-error').textContent=error.message}finally{button.disabled=false}};
 document.addEventListener('click',e=>{if(!e.composedPath().some(node=>node instanceof Element&&(node.closest('.session-more')||node.id==='conversation-menu')))closeConversationMenu()});
 $('#conversation-menu').addEventListener('keydown',e=>{const buttons=[...e.currentTarget.querySelectorAll('button')];const index=buttons.indexOf(document.activeElement);if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();buttons[e.key==='Home'?0:e.key==='End'?buttons.length-1:(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus()}});
@@ -233,4 +289,5 @@ sidebarMedia.addEventListener('change',()=>{$('#app').classList.remove('menu-ope
 // Let editing inputs keep their values when clicking inside an open parameter menu.
 document.addEventListener('click',e=>{if(!e.composedPath().some(node=>node instanceof Element&&node.matches('.setting'))&&openSetting){openSetting=null;renderSettings()}});document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.popover')){e.preventDefault();const apply=e.target.closest('.popover').querySelector('#apply-ratio,#apply-count');apply?.click();return}if(e.key==='Escape'){closeConversationMenu();openSetting=null;renderSettings();closeMobileSidebar()}});
 window.addEventListener('beforeunload',e=>{if(pending.size){e.preventDefault();e.returnValue=''}});
-activeId=newThread();render();updateIdentity();try{authConfig=await api('/api/config');selectAuth(authMode);}catch{$('#auth-service-note').textContent='暂时无法确认邮件服务状态，请稍后重试。';}try{const d=await api('/api/me');user=d.user;updateIdentity();if(user){await loadAPIProfiles();await loadHistory();if(!hasSeenGuide())openGuide(false)}else if(!hasSeenGuide())openGuide(false)}catch(e){toast(e.message)}
+activeId=newThread();render();updateIdentity();renderStorage();try{updateFeed=await api('/api/updates');}catch{}try{authConfig=await api('/api/config');selectAuth(authMode);}catch{$('#auth-service-note').textContent='暂时无法确认邮件服务状态，请稍后重试。';}try{const d=await api('/api/me');user=d.user;updateIdentity();if(user){await loadAPIProfiles();await refreshStorage(false);await loadHistory();if(!hasSeenGuide())openGuide(false)}else if(!hasSeenGuide())openGuide(false)}catch(e){toast(e.message)}
+announcementsReady=true;queueAnnouncements();

@@ -46,6 +46,9 @@ test('self-host migration upgrades an existing database without replacing accoun
   assert.equal(upgraded.prepare('SELECT password_hash FROM users WHERE id=?').get('original-account').password_hash,'original-hash');
   assert(upgraded.prepare('PRAGMA table_info(tasks)').all().some(c=>c.name==='api_key_hash'));
   assert(upgraded.prepare('PRAGMA table_info(conversations)').all().some(c=>c.name==='pinned'));
+  assert(upgraded.prepare('PRAGMA table_info(users)').all().some(c=>c.name==='last_seen_release'));
+  assert(upgraded.prepare('PRAGMA table_info(tasks)').all().some(c=>c.name==='references_ready'));
+  assert.equal(upgraded.prepare('SELECT COUNT(*) AS n FROM account_storage').get().n,0);
   upgraded.close();
  }finally{await rm(dir,{recursive:true,force:true});}
 });
@@ -82,8 +85,12 @@ test('self-host persists encrypted API profiles, conversations and private refer
   r=await app.request('/api/tasks',{body:form,headers:{'x-api-profile':profile.id,'idempotency-key':crypto.randomUUID()}});
   assert.equal(r.status,202);const task=(await r.json()).task;
   assert.equal(mock.jobs.size,1);
+  const release=(await (await app.request('/api/updates')).json()).current.version;
+  assert.equal((await app.request('/api/updates/seen',{body:{version:release}})).status,200);
   await app.close();migrate(dir);app=await launch(dir,mock);
   assert.equal((await app.request('/api/auth/password/login',{body:account})).status,200);
+  assert.equal((await (await app.request('/api/me')).json()).user.lastSeenRelease,release);
+  const storage=await (await app.request('/api/storage')).json();assert(storage.usedBytes>0);assert.equal(storage.limitBytes,1000000000);
   const profiles=await (await app.request('/api/api-profiles')).json();
   assert.equal(profiles.profiles[0].id,profile.id);assert(!JSON.stringify(profiles).includes('sk-jitu-self-host-test'));
   const conversations=await (await app.request('/api/conversations')).json();
