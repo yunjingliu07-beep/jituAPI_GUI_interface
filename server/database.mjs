@@ -8,7 +8,8 @@ const migrations=[
  ['0001_conversations','tasks','conversation_id'],
  ['0002_task_references','tasks','reference_files'],
  ['0003_account_workflow','users','onboarding_completed_at'],
- ['0004_updates_storage','users','last_seen_release']
+ ['0004_updates_storage','users','last_seen_release'],
+ ['0005_invitations','users','role']
 ];
 export function databaseFile(directory){return resolve(directory,'studio.sqlite');}
 export function migrate(directory){
@@ -29,10 +30,11 @@ export function openDatabase(directory){
  const raw=new DatabaseSync(databaseFile(directory),{open:true});
  raw.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
  // Fail closed when someone starts the service before applying its schema.
- raw.prepare('SELECT password_hash,onboarding_completed_at,selected_api_id,last_seen_release FROM users LIMIT 0').all();
+ raw.prepare('SELECT password_hash,onboarding_completed_at,selected_api_id,last_seen_release,role,invitation_id FROM users LIMIT 0').all();
  raw.prepare('SELECT reference_files,references_ready,api_profile_id,api_key_hash FROM tasks LIMIT 0').all();
  raw.prepare('SELECT pinned,deleted_at FROM conversations LIMIT 0').all();
  raw.prepare('SELECT notice_revision FROM account_storage LIMIT 0').all();
+ raw.prepare('SELECT code_hash,used_by FROM registration_invitations LIMIT 0').all();
  return {raw,batch(statements){raw.exec('BEGIN IMMEDIATE');try{const results=statements.map(s=>s._batchRun());raw.exec('COMMIT');return Promise.resolve(results);}catch(e){raw.exec('ROLLBACK');throw e;}},prepare(sql){let values=[];const statement=raw.prepare(sql);const query={
   _batchRun(){const r=statement.run(...values);return {success:true,meta:{changes:r.changes}};},
   bind(...args){values=args;return query;},

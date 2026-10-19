@@ -44,13 +44,13 @@ systemctl is-active image-meow
 curl --fail --silent --show-error https://imagemeow.top/api/config
 ```
 
-配置就绪时响应包含 `emailCodeEnabled: true`、`passwordResetEnabled: true` 和 `registrationRequiresEmailCode: true`。这些字段只表示服务器已加载必要配置，不代表 Resend 域名、密钥权限或实际投递已验证。若缺少邮件配置，已有账号仍可密码登录，注册与找回密码会停用。本站没有新增数据库表，沿用原来的 `email_codes` 表。
+配置就绪时响应包含 `emailCodeEnabled: true`、`passwordResetEnabled: true` 和 `registrationRequiresEmailCode: true`。这些字段只表示服务器已加载必要配置，不代表 Resend 域名、密钥权限或实际投递已验证。若缺少邮件配置，已有账号仍可密码登录，注册与找回密码会停用。邮件验证码仍使用 `email_codes` 表；当前邀请码功能还需应用 `0005_invitations.sql`，详见 [邀请码说明](invitations.md)。
 
 服务器需要能通过 HTTPS 访问 `api.resend.com:443`。不需要开放 SMTP 端口。Node 生产入口已把两项邮件环境变量传递到后端；仅修改配置而不更新代码不会启用此功能。
 
 ## 4. 实际验收
 
-1. 使用你控制的一个未注册邮箱，切换「注册账号」，点击发送验证码，检查收件箱和垃圾邮件后完成注册。不能跳过邮箱验证码直接注册。
+1. 使用你控制的一个未注册邮箱，切换「注册账号」，填写管理员提供的有效邀请码后点击发送验证码，检查收件箱和垃圾邮件后完成注册。不能跳过邮箱验证码直接注册。
 2. 退出登录，点击「忘记密码」，用同一邮箱获取新的找回密码验证码并设置新密码。
 3. 确认旧密码无法登录、新密码可登录、其他已登录设备会话失效。
 4. 在 Resend Emails 中核对投递事件；API 接受发送不等于已经进入收件箱。若失败，核对 Sending 是否 Verified、Key 的域名范围、发件地址及账号发送限制。

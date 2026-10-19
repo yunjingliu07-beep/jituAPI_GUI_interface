@@ -25,7 +25,7 @@ async function exactUsage(a,task,target){
 }
 test('release feed is public; acknowledgement persists per account and rejects unknown versions',async()=>{
  const a=await setup();try{
-  const feed=await (await a.req('/api/updates')).json();assert.equal(feed.current.version,RELEASES[0].version);assert(feed.current.changes.some(x=>x.includes('1 GB')));
+  const feed=await (await a.req('/api/updates')).json();assert.equal(feed.current.version,RELEASES[0].version);assert(feed.releases.some(r=>r.changes.some(x=>x.includes('1 GB'))));
   assert.equal((await (await a.req('/api/me')).json()).user.lastSeenRelease,null);
   assert.equal((await a.req('/api/updates/seen',{version:'future-release'})).status,409);
   assert.equal((await a.req('/api/updates/seen',{version:feed.current.version})).status,200);

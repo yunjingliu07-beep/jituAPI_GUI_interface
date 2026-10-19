@@ -1,3 +1,4 @@
+import {createHash,randomBytes,randomUUID} from 'node:crypto';
 export const PNG=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');
 export function mockUpstream(){
  const calls=[],jobs=new Map(),mail=[],nativeFetch=globalThis.fetch;let sequence=0;
@@ -17,3 +18,12 @@ export function mockUpstream(){
 }
 
 export function mockBucket(){const objects=new Map();return {objects,async put(key,body){objects.set(key,new Uint8Array(await new Response(body).arrayBuffer()));},async get(key){const bytes=objects.get(key);return bytes?{body:bytes.slice()}:null;},async delete(keys){for(const key of Array.isArray(keys)?keys:[keys])objects.delete(key);}};}
+
+// Seed an issuer and invitation without relying on the feature under test.
+export function seedInvitation(db){
+ let owner=db.prepare("SELECT id FROM users WHERE role='owner'").get();
+ if(!owner){owner={id:randomUUID()};db.prepare("INSERT INTO users(id,email,role,created_at) VALUES (?,?,'owner',?)").run(owner.id,'fixture-owner@example.com',Math.floor(Date.now()/1000));}
+ const raw=randomBytes(16).toString('hex').toUpperCase();
+ db.prepare('INSERT INTO registration_invitations(id,code_hash,code_hint,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?)').run(randomUUID(),createHash('sha256').update(raw).digest('hex'),raw.slice(0,4)+'…'+raw.slice(-4),owner.id,Math.floor(Date.now()/1000),Math.floor(Date.now()/1000)+86400);
+ return 'MEOW-'+raw.match(/.{4}/g).join('-');
+}

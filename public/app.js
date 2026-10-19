@@ -23,7 +23,7 @@ $$('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
 $$('dialog').forEach(d=>d.addEventListener('click',e=>{const r=d.getBoundingClientRect();if(d.id==='help-dialog'&&!hasSeenGuide())return;if(e.target===d&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))d.close()}));
 function newThread(){const id=crypto.randomUUID();threads.set(id,{id,title:'新的生图会话',settings:defaults(),draft:'',files:[],fileURLs:[],mask:null,maskURL:null,createdAt:Date.now()/1000,updatedAt:Date.now()/1000,local:true,pinned:false});return id}
 function clearImageCache(){images.forEach(v=>{if(v.url)URL.revokeObjectURL(v.url)});images.clear();$('#lightbox').close();$('#lightbox-image').removeAttribute('src')}
-function resetWorkspace(){epoch++;storageState=null;updateDialogContext=null;storageDialogContext=null;for(const id of ['#updates-dialog','#storage-notice-dialog'])if($(id).open)$(id).close();renderStorage();guideAcknowledgedThisVisit=false;$('#key-form').reset();$('#api-key').type='password';$('#toggle-key').textContent='显示';for(const id of ['#key-dialog','#delete-api-dialog','#rename-dialog','#delete-conversation-dialog'])if($(id).open)$(id).close();apiProfiles=[];selectedApiId=null;apiKey='';deletedConversationIds.clear();closeConversationMenu();clearTimeout(pollTimer);pollTimer=null;polling=false;querying=new Set();threads.forEach(t=>{t.fileURLs.forEach(URL.revokeObjectURL);if(t.maskURL)URL.revokeObjectURL(t.maskURL)});inputSnapshots.clear();threads=new Map();tasks=new Map();runtimes=new Map();pending=new Map();clearImageCache();activeId=newThread();$('#prompt').value='';$('#mask-file').value='';render();renderAPIProfiles()}
+function resetWorkspace(){epoch++;resetAdminPanel();if($('#admin-dialog').open)$('#admin-dialog').close();storageState=null;updateDialogContext=null;storageDialogContext=null;for(const id of ['#updates-dialog','#storage-notice-dialog'])if($(id).open)$(id).close();renderStorage();guideAcknowledgedThisVisit=false;$('#key-form').reset();$('#api-key').type='password';$('#toggle-key').textContent='显示';for(const id of ['#key-dialog','#delete-api-dialog','#rename-dialog','#delete-conversation-dialog'])if($(id).open)$(id).close();apiProfiles=[];selectedApiId=null;apiKey='';deletedConversationIds.clear();closeConversationMenu();clearTimeout(pollTimer);pollTimer=null;polling=false;querying=new Set();threads.forEach(t=>{t.fileURLs.forEach(URL.revokeObjectURL);if(t.maskURL)URL.revokeObjectURL(t.maskURL)});inputSnapshots.clear();threads=new Map();tasks=new Map();runtimes=new Map();pending=new Map();clearImageCache();activeId=newThread();$('#prompt').value='';$('#mask-file').value='';render();renderAPIProfiles()}
 async function api(path,opts={}){
  const requestEpoch=epoch;const headers={...opts.headers};const profileId=opts.profileId||selectedApiId;if(profileId)headers['X-API-Profile']=profileId;else if(apiKey&&!apiKey.startsWith('profile:'))headers['X-Jitu-Key']=apiKey;const {profileId:_profileId,...requestOptions}=opts;opts=requestOptions;
  if(opts.body&&!(opts.body instanceof FormData)){headers['Content-Type']='application/json';opts={...opts,body:JSON.stringify(opts.body)}}
@@ -36,11 +36,74 @@ async function api(path,opts={}){
 function requireUser(){if(!user){openDialog('#auth-dialog');return false}return true}
 function requireKey(){if(!requireUser())return false;if(!hasSeenGuide()){openGuide(false);return false}if(!apiKey){openDialog('#key-dialog');return false}return true}
 function updateIdentity(){
+ $('#admin-open').hidden=!canInvite();
  $('#account-name').textContent=user?.email.split('@')[0]||'登录 image meow';$('#account-sub').textContent=user?.email||'开启你的灵感工作室';$('#avatar').textContent=user?user.email[0].toUpperCase():'M';$('#account-email').textContent=user?.email||'';
  $('#current-password-field').hidden=!user?.hasPassword;$('#current-password').required=!!user?.hasPassword;$('#new-password-label').textContent=user?.hasPassword?'设置新密码':'设置登录密码';
  $('#connection-label').textContent=apiProfiles.find(p=>p.id===selectedApiId)?.name||'连接 API';$('#switch-api').title=selectedApiId?'当前 API：'+(apiProfiles.find(p=>p.id===selectedApiId)?.name||'已选择'):'添加或切换 API';$('#header-key').classList.toggle('connected',!!apiKey);renderSidebar();updateComposerState();
 }
 $('#account-open').onclick=()=>{if(user)refreshStorage();openDialog(user?'#account-dialog':'#auth-dialog')};$('#switch-api').onclick=$('#header-key').onclick=()=>{if(requireUser()){renderAPIProfiles();openDialog('#key-dialog')}};$('#help-open').onclick=()=>openGuide(false);
+let adminOffset=0,adminPage=null,adminLoading=false;
+function canInvite(){return !!user&&['owner','admin'].includes(user.role);}
+function resetAdminPanel(){adminOffset=0;adminPage=null;$('#invite-generated').hidden=true;$('#invite-codes').value='';$('#invite-list').replaceChildren();$('#admin-members-list').replaceChildren();$('#invite-create-form').reset();$('#admin-member-form').reset();$('#invite-previous').disabled=true;$('#invite-next').disabled=true;$('#admin-error').textContent='';}
+function inviteDate(value){return new Date(value*1000).toLocaleString('zh-CN',{hour12:false});}
+function renderInvitations(page){
+ const holder=$('#invite-list');holder.replaceChildren();
+ const names={available:'可使用',used:'已使用',expired:'已过期',revoked:'已撤销'};
+ for(const invitation of page.invitations){
+  const row=document.createElement('div');row.className='invite-row';
+  const details=document.createElement('div'),code=document.createElement('code');code.textContent=invitation.hint;
+  const state=document.createElement('span');state.className='invite-status '+invitation.status;state.textContent=names[invitation.status];
+  const line=document.createElement('div');line.className='invite-row-heading';line.append(code,state);
+  const meta=document.createElement('p');meta.className='helper';meta.textContent=`${invitation.label||'未填写备注'} · 有效至 ${inviteDate(invitation.expiresAt)}`;
+  const owner=document.createElement('p');owner.className='helper';owner.textContent=`创建者：${invitation.createdBy}${invitation.usedBy?' · 使用者：'+invitation.usedBy:''}`;
+  details.append(line,meta,owner);row.append(details);
+  if(invitation.status==='available'){
+   const revoke=document.createElement('button');revoke.type='button';revoke.className='secondary';revoke.textContent='撤销';revoke.setAttribute('aria-label','撤销邀请码 '+invitation.hint);
+   revoke.onclick=async()=>{revoke.disabled=true;const token=epoch;try{await api(`/api/admin/invites/${invitation.id}/revoke`,{method:'POST',body:{}});if(token===epoch)await loadAdminPanel();}catch(e){if(token===epoch)$('#admin-error').textContent=e.message;}finally{revoke.disabled=false;}};row.append(revoke);
+  }
+  holder.append(row);
+ }
+ if(!page.invitations.length){const p=document.createElement('p');p.className='helper';p.textContent='还没有邀请码，可在上方生成。';holder.append(p);}
+ $('#invite-page').textContent=`共 ${page.total} 个 · 第 ${Math.floor(page.offset/50)+1} 页`;
+ $('#invite-previous').disabled=page.offset===0;$('#invite-next').disabled=page.nextOffset===null;
+}
+function renderAdminMembers(members){
+ const holder=$('#admin-members-list');holder.replaceChildren();
+ for(const member of members){const row=document.createElement('div');row.className='invite-row';const label=document.createElement('span');label.textContent=member.email+' · '+(member.role==='owner'?'站长':'管理员');row.append(label);
+  if(member.role!=='owner'){const remove=document.createElement('button');remove.type='button';remove.className='secondary';remove.textContent='撤销管理员';remove.onclick=()=>changeAdminMember(member.email,'revoke',remove);row.append(remove);}holder.append(row);
+ }
+}
+async function loadAdminPanel(){
+ if(!canInvite()||adminLoading)return;adminLoading=true;const token=epoch;
+ $('#admin-members-section').hidden=user.role!=='owner';$('#admin-error').textContent='';$('#invite-scope').textContent=user.role==='owner'?'你可以管理全站邀请码。':'这里显示你创建的邀请码。';
+ try{
+  const page=await api(`/api/admin/invites?offset=${adminOffset}`);if(token!==epoch)return;adminPage=page;renderInvitations(page);
+  if(user.role==='owner'){const data=await api('/api/admin/members');if(token===epoch)renderAdminMembers(data.members);}
+ }catch(e){
+  if(token!==epoch)return;
+  if(e.status===403){resetAdminPanel();try{const d=await api('/api/me');user=d.user;updateIdentity();}catch{}if($('#admin-dialog').open)closeDialog('#admin-dialog');toast('管理员权限已变更，请刷新页面。');}
+  else $('#admin-error').textContent=e.message;
+ }finally{adminLoading=false;}
+}
+async function changeAdminMember(email,action,button){
+ button.disabled=true;const token=epoch;$('#admin-error').textContent='';
+ try{await api('/api/admin/members',{method:'POST',body:{email,action}});if(token!==epoch)return;$('#admin-member-form').reset();await loadAdminPanel();toast(action==='grant'?'已添加管理员。':'已撤销管理员，其未使用的邀请码也已失效。');}
+ catch(e){if(token===epoch)$('#admin-error').textContent=e.message;}finally{button.disabled=false;}
+}
+$('#admin-open').onclick=()=>{if(!canInvite())return;openDialog('#admin-dialog');loadAdminPanel();};
+$('#admin-dialog').addEventListener('close',()=>{$('#invite-codes').value='';$('#invite-generated').hidden=true;});
+$('#invite-create-form').onsubmit=async e=>{
+ e.preventDefault();const button=e.submitter,token=epoch;button.disabled=true;$('#admin-error').textContent='';
+ try{
+  const d=await api('/api/admin/invites',{method:'POST',body:{count:Number($('#invite-count').value),expiresInDays:Number($('#invite-days').value),label:$('#invite-label').value.trim()}});if(token!==epoch)return;
+  $('#invite-codes').value=d.invitations.map(i=>i.code).join('\n');$('#invite-generated').hidden=false;adminOffset=0;await loadAdminPanel();
+ }catch(error){if(token===epoch)$('#admin-error').textContent=error.message;}finally{button.disabled=false;}
+};
+$('#invite-copy').onclick=async()=>{const input=$('#invite-codes');try{await navigator.clipboard.writeText(input.value);toast('邀请码已复制，可以分发给成员。');}catch{input.focus();input.select();toast('已选中邀请码，请复制保存。');}};
+$('#invite-previous').onclick=()=>{adminOffset=Math.max(0,adminOffset-50);loadAdminPanel();};
+$('#invite-next').onclick=()=>{if(adminPage?.nextOffset!=null){adminOffset=adminPage.nextOffset;loadAdminPanel();}};
+$('#admin-member-form').onsubmit=e=>{e.preventDefault();changeAdminMember($('#admin-member-email').value.trim(),'grant',e.submitter);};
+
 let announcementsReady=false;
 let updateFeed=null,storageState=null,storageBusy=false,updateDialogContext=null,storageDialogContext=null;
 const seenUpdatesThisVisit=new Set(),seenNoticesThisVisit=new Set();
@@ -107,6 +170,7 @@ function updateCodeButton(){
 }
 function selectAuth(value){
  authMode=value;const verifying=value!=='login';
+ $('#auth-invite-field').hidden=value!=='register';$('#auth-invite').required=value==='register';$('#auth-invite').disabled=value!=='register';$('#auth-invite').value='';
  $$('[data-auth]').forEach(b=>{b.classList.toggle('active',b.dataset.auth===value);b.setAttribute('aria-selected',b.dataset.auth===value);});
  $('#auth-title').textContent=value==='reset'?'找回你的账号':'登录，遇见你的灵感';
  $('#register-confirm-field').hidden=!verifying;$('#auth-confirm-password').required=verifying;
@@ -117,9 +181,9 @@ function selectAuth(value){
  $('#auth-helper').textContent=verifying?'密码至少 10 位；请使用最新邮件中的验证码。':'首次使用请切换到「注册账号」。';
  $('#auth-code-field').hidden=!verifying;$('#auth-code').required=verifying;
  $('#forgot-password').hidden=value!=='login';
- $('#auth-service-note').textContent=authConfig.emailCodeEnabled?'注册和找回密码需验证邮箱；验证码 10 分钟内有效。':'邮件服务尚未就绪，暂时无法注册或找回密码。已有账号可使用密码登录。';
+ $('#auth-service-note').textContent=authConfig.emailCodeEnabled?'新注册需邀请码；注册和找回密码需验证邮箱，验证码 10 分钟内有效。':'邮件服务尚未就绪，暂时无法注册或找回密码。已有账号可使用密码登录。';
  for(const id of ['#auth-error','#auth-code-status'])$(id).textContent='';
- for(const id of ['#auth-password','#auth-confirm-password','#auth-code'])$(id).value='';
+ for(const id of ['#auth-password','#auth-confirm-password','#auth-code','#auth-invite'])$(id).value='';
  updateCodeButton();
 }
 $$('[data-auth]').forEach(b=>b.onclick=()=>selectAuth(b.dataset.auth));
@@ -127,12 +191,13 @@ $('#forgot-password').onclick=()=>selectAuth('reset');selectAuth('login');
 setInterval(updateCodeButton,1000);
 $('#auth-email').addEventListener('input',()=>{$('#auth-code').value='';$('#auth-code-status').textContent='';updateCodeButton()});
 $('#send-auth-code').onclick=async()=>{
+ if(authMode==='register'&&!$('#auth-invite').reportValidity())return;
  if(!$('#auth-email').reportValidity())return;
  const email=emailCodeKey(),purpose=authMode;
  if(!['register','reset'].includes(purpose)||codeSending)return;
  codeSending=true;$('#auth-error').textContent='';updateCodeButton();
  try{
-  const d=await api('/api/auth/code/send',{method:'POST',body:{email,purpose}});
+  const d=await api('/api/auth/code/send',{method:'POST',body:{email,purpose,inviteCode:$('#auth-invite').value}});
   codeCooldowns.set(email,Date.now()+d.retryAfter*1000);
   if(email===emailCodeKey()&&purpose===authMode){$('#auth-code-status').textContent=d.message;$('#auth-code').focus();}
  }catch(e){$('#auth-error').textContent=e.message;}finally{codeSending=false;updateCodeButton();}
@@ -142,12 +207,12 @@ $('#auth-form').onsubmit=async e=>{
  if(mode!=='login'&&$('#auth-password').value!==$('#auth-confirm-password').value){$('#auth-error').textContent='两次输入的密码不一致。';return;}
  $('#auth-submit').disabled=true;
  try{
-  const body={email:$('#auth-email').value,password:$('#auth-password').value,confirmPassword:$('#auth-confirm-password').value,code:$('#auth-code').value};
+  const body={email:$('#auth-email').value,password:$('#auth-password').value,confirmPassword:$('#auth-confirm-password').value,code:$('#auth-code').value,inviteCode:$('#auth-invite').value};
   const d=await api(`/api/auth/password/${mode}`,{method:'POST',body});
   if(mode==='reset'){
    user=null;resetWorkspace();updateIdentity();selectAuth('login');$('#auth-helper').textContent='密码已重设，请使用新密码登录。';toast('密码已重设，所有设备需要重新登录。');return;
   }
-  user=d.user;for(const id of ['#auth-password','#auth-confirm-password','#auth-code'])$(id).value='';
+  user=d.user;for(const id of ['#auth-password','#auth-confirm-password','#auth-code','#auth-invite'])$(id).value='';
   closeDialog('#auth-dialog');updateIdentity();await afterSignIn();toast(mode==='register'?'注册成功，欢迎来到你的灵感工作室。':'登录成功，欢迎回来。');
  }catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=authMode!=='login'&&!authConfig.emailCodeEnabled;}
 };
