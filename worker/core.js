@@ -219,6 +219,9 @@ async function invitationAdmin(req,env,user,path){
 // GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
 export const RELEASES = [{
+ version:'2026.10.19.4',date:'2026-10-19',title:'更新日志弹窗样式优化',
+ changes:['移除更新日志弹窗右上角「×」周围的绿色方框。']
+},{
  version:'2026.10.19.3',date:'2026-10-19',title:'删除会话弹窗样式优化',
  changes:['移除删除会话确认弹窗右上角「×」周围的绿色方框。']
 },{
