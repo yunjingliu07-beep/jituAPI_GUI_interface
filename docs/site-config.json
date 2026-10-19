@@ -6,12 +6,14 @@
   "platform_url": "https://jitu-image-workshop.foamydeer513.chatgpt.site",
   "logo_source": "public/brand-mark.svg",
   "favicon_url": "/favicon.svg",
-  "hosting": "Sites / Cloudflare Workers",
+  "hosting": "Ubuntu production; Sites paused source mirror",
   "database_binding": "DB",
   "custom_domain_status_at_check": "active",
   "https_status_at_check": "active",
-  "checked_on": "2026-10-18",
+  "checked_on": "2026-10-19",
   "dns_configuration_reference": "docs/custom-domain.md",
-  "note": "Informational snapshot only; domain, DNS, and audience are managed outside Git.",
-  "file_storage_binding": "BUCKET"
+  "note": "Informational snapshot only. Production currently runs on Ubuntu. A retained Sites domain binding does not establish current DNS routing; Sites runtime pause and secrets are preserved independently.",
+  "file_storage_binding": "BUCKET",
+  "sites_role": "paused_source_mirror",
+  "source_sync_reference": "docs/source-sync.md"
 }

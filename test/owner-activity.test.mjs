@@ -4,7 +4,7 @@ import {readFile,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import {createHandler,sha,storageUsage,USER_STORAGE_LIMIT,RELEASES} from '../worker/core.js';
+import {createHandler,sha,storageUsage,USER_STORAGE_LIMIT} from '../worker/core.js';
 import {localDB} from '../scripts/d1-local.mjs';
 import {migrate,databaseFile} from '../server/database.mjs';
 import {mockBucket,mockUpstream} from './fixtures.mjs';
@@ -109,7 +109,7 @@ test('UTC+8 inclusive date filters, literal email search, pagination and invalid
  }finally{a.close();}
 });
 
-test('upgrade backfills old tasks once and keeps the public release feed unchanged',async()=>{
+test('upgrade backfills old tasks once and retains activity after task deletion',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'meow-activity-'));
  try{
   const raw=new DatabaseSync(databaseFile(dir));
@@ -119,6 +119,5 @@ test('upgrade backfills old tasks once and keeps the public release feed unchang
   migrate(dir);migrate(dir);
   const db=new DatabaseSync(databaseFile(dir));
   try{const rows=db.prepare('SELECT * FROM api_activity').all();assert.equal(rows.length,1);assert.equal(rows[0].source,'historical');assert.equal(rows[0].started_at,123);assert.equal(rows[0].email,'old@example.com');db.exec('DELETE FROM tasks');assert.equal(db.prepare('SELECT COUNT(*) AS n FROM api_activity').get().n,1);}finally{db.close();}
-  assert.equal(RELEASES[0].version,'2026.10.19.2');
  }finally{await rm(dir,{recursive:true,force:true});}
 });

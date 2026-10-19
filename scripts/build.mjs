@@ -8,4 +8,7 @@ const bundled=core+'\nexport default createHandler('+JSON.stringify(assets)+');\
 await writeFile('worker/index.js',bundled);
 await rm('dist',{recursive:true,force:true});await mkdir('dist/server',{recursive:true});await mkdir('dist/.openai',{recursive:true});
 await writeFile('dist/server/index.js',bundled);await cp('.openai/hosting.json','dist/.openai/hosting.json');await cp('drizzle','dist/drizzle',{recursive:true});
+// Preserve the already-applied Ubuntu migration. Hosted D1 migrations are schema-only.
+await cp('drizzle/sites/0006_owner_activity.sql','dist/drizzle/0006_owner_activity.sql');
+await rm('dist/drizzle/sites',{recursive:true,force:true});
 console.log('Built Worker and embedded assets.');
