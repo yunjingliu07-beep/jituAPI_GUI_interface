@@ -21,4 +21,5 @@
 @media(max-width:700px){.api-switch{font-size:9px;padding:5px 7px;margin-left:0}.api-switch .icon{width:12px;height:12px}.toolbar{gap:3px}.account-disclaimer{font-size:11px;padding:10px 12px}.session-more{width:27px;flex-basis:27px}.dialog-button-row{gap:8px}}
 
 .account-disclaimer em{font-synthesis:weight style}
-#delete-conversation-dialog .dialog-close:focus-visible{outline:none;color:#333c2c}
+#delete-conversation-dialog .dialog-close:focus-visible,
+#updates-dialog .dialog-close:focus-visible{outline:none;color:#333c2c}
