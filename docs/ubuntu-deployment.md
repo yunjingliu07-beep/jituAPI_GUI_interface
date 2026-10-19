@@ -72,7 +72,33 @@ sudo journalctl -u image-meow -n 30 --no-pager
 sudo nginx -t
 ```
 
-更新代码前先备份。正常更新使用 `sudo git pull --ff-only`，再重新运行安装器（域名必须与 `server.env` 中相同）。备份应在短暂停止服务期间同时复制数据目录与配置文件到私有备份存储；SQLite 在 WAL 模式下不能只复制一个正在使用的 `.sqlite` 文件。不要把备份放到网页目录或 Git 仓库。
+日常更新由你在服务器手动执行，GitHub 推送不会自动拉取代码：
+
+```bash
+cd /opt/image-meow &&
+sudo git pull --ff-only origin main &&
+sudo bash deploy/ubuntu/update.sh
+```
+
+`Already up to date` 只表示 Git 没有新提交，不能作为服务正常的判断。更新脚本会打印停服、备份、迁移、启动和健康检查五个阶段；停服可能需要等待已有请求完成（最多 120 秒），备份耗时取决于数据大小。执行期间保持终端连接，不要同时启动第二次更新。
+
+备份在服务停止时将整个数据目录与配置文件保存至 `/var/backups/image-meow-update-*`，SQLite 在 WAL 模式下不能只复制一个正在使用的 `.sqlite` 文件。不要把备份放到网页目录或 Git 仓库。若更新失败或收到 HUP/INT/TERM，脚本保留非零退出码、备份和错误阶段，并尝试启动原本处于运行状态的服务；这不是代码或数据回滚，也不能保证错误的新代码能启动。强制结束进程或服务器断电时无法保证执行恢复。
+
+若更新命令已经退出，且确认没有更新或迁移进程仍在运行，但服务显示 `inactive (dead)`，先启动服务并检查日志：
+
+```bash
+sudo systemctl start image-meow
+sudo systemctl status image-meow --no-pager -l
+sudo journalctl -u image-meow -n 50 --no-pager
+```
+
+如果服务能启动且数据库已完成迁移，纯前端样式更新只需拉取代码并重启，不必再次停服备份和迁移：
+
+```bash
+cd /opt/image-meow &&
+sudo git pull --ff-only origin main &&
+sudo systemctl restart image-meow
+```
 
 ## 迁移旧站与切换主域名（尚未执行）
 
