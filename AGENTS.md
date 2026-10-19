@@ -23,3 +23,7 @@ Its retained custom-domain binding is not evidence of current public DNS routing
   the explicit schema-only override in `drizzle/sites/` for migration 0006, whose
   original server migration contains a legacy historical-data backfill. Keep both
   resulting schemas compatible and do not modify an applied hosted override.
+- For this custom Worker build, run `npm run build`, then
+  `node scripts/package-sites.mjs /absolute/path/deployment.tar.gz`. The archive
+  must contain `.openai/hosting.json`, `dist/server/index.js`, and `drizzle/` at
+  the root so Sites can discover the hosted migrations. Do not package only dist/.

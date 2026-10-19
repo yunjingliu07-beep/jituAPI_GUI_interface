@@ -7,6 +7,7 @@
     "start": "node server/index.mjs",
     "db:migrate": "node server/migrate.mjs",
     "build": "node scripts/build.mjs",
+    "package:sites": "node scripts/package-sites.mjs",
     "test": "node --test test/*.test.mjs",
     "dev": "node scripts/dev.mjs"
   },

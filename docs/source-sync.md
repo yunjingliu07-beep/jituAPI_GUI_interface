@@ -27,3 +27,7 @@ sudo systemctl restart image-meow
 Ubuntu 已执行的 `drizzle/0006_owner_activity.sql` 包含历史调用记录回填，保持原样。Sites 的新迁移只变更 schema，因此构建时用 `drizzle/sites/0006_owner_activity.sql` 替换部署包中的同名文件；此前的迁移和 journal 保持一致。该覆盖文件只移除历史回填，保留相同的表、索引与触发器；它不会把服务器的调用历史带入 Sites。后续真实新调用仍按业务代码记录，但目前 Sites 保持暂停。
 
 数据库、上传文件、加密主密钥与邮件配置由两种部署独立管理。除非另外获得明确指令，不迁移数据、不解除暂停、不改变 DNS，也不改服务器配置。
+
+## Sites 构建与打包
+
+构建后运行 `node scripts/package-sites.mjs /绝对路径/deployment.tar.gz`。打包脚本将 `.openai/hosting.json`、`dist/server/index.js` 和 schema-only 的 `drizzle/` 放到部署包根目录。平台不会从 `dist/drizzle/` 查找迁移，因此不能直接把整个 dist 目录打包后就视为数据库已升级；部署后应核对 schema。源码必须先推送，再用该提交保存版本和发布，保持原暂停与运行配置不变。

@@ -47,5 +47,13 @@ test('Sites package keeps the same business schema without replaying the server 
   const worker=await readFile(join(dir,'dist/server/index.js'),'utf8');
   assert(worker.includes('/activity.js'));assert(worker.includes('2026.10.19.4'));
   assert(worker.includes('#updates-dialog .dialog-close:focus-visible'));
+  const archive=join(dir,'deployment.tar.gz');
+  await exec(process.execPath,[join(root,'scripts/package-sites.mjs'),archive],{cwd:dir});
+  const {stdout:list}=await exec('tar',['-tzf',archive]);
+  assert(list.includes('./drizzle/0006_owner_activity.sql'));
+  assert(list.includes('./dist/server/index.js'));assert(list.includes('./.openai/hosting.json'));
+  assert(!list.includes('dist/drizzle/'));assert(!list.includes('worker/core.js'));
+  const {stdout:packed}=await exec('tar',['-xOzf',archive,'./drizzle/0006_owner_activity.sql']);
+  assert.equal(packed,hosted);
  }finally{server.close();site.close();await rm(dir,{recursive:true,force:true});}
 });
