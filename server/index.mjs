@@ -5,7 +5,7 @@ import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {createHandler} from '../worker/core.js';
+import {createHandler,maintainExistingStorage} from '../worker/core.js';
 import {localBucket} from '../scripts/r2-local.mjs';
 import {openDatabase} from './database.mjs';
 
@@ -20,6 +20,8 @@ export async function createServer({origin,dataDir,vaultKey,resendApiKey,emailFr
  }
  assets['/favicon.svg']=assets['/brand-mark.svg'];
  const DB=openDatabase(dataDir),env={DB,API_VAULT_KEY:vaultKey,RESEND_API_KEY:resendApiKey,EMAIL_FROM:emailFrom,BUCKET:localBucket(resolve(dataDir,'references'))};
+ const maintenance=await maintainExistingStorage(env);
+ if(maintenance.failures)console.warn('Some account storage cleanup remains pending; it will retry on account access.');
  const app=createHandler(assets);
  const server=http.createServer({maxHeaderSize:16384},async(req,res)=>{
   try{

@@ -77,7 +77,7 @@ async function consumeEmailCode(env,email,purpose,code,ip) {
 async function getSession(req, db) {
   const token = (req.headers.get('cookie') || '').match(/(?:^|;\s*)__Host-jitu=([a-f0-9]{64})(?:;|$)/)?.[1];
   if (!token) return null;
-  return one(db,'SELECT users.id,users.email,users.password_hash,users.onboarding_completed_at,users.selected_api_id,sessions.verified_at,sessions.token_hash FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?',await sha(token),now());
+  return one(db,'SELECT users.id,users.email,users.password_hash,users.onboarding_completed_at,users.selected_api_id,users.last_seen_release,sessions.verified_at,sessions.token_hash FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?',await sha(token),now());
 }
 async function sessionResponse(db, user, status = 200) {
   const token = randomToken(); const t = now();
@@ -87,7 +87,7 @@ async function sessionResponse(db, user, status = 200) {
   assert(session,'密码已更改，请使用新密码重新登录。',401);
   return json({user:publicUser(user)},status,{'Set-Cookie':`__Host-jitu=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`});
 }
-function publicUser(user){return {email:user.email,hasPassword:!!user.password_hash,onboardingCompleted:!!user.onboarding_completed_at};}
+function publicUser(user){return {email:user.email,hasPassword:!!user.password_hash,onboardingCompleted:!!user.onboarding_completed_at,lastSeenRelease:user.last_seen_release||null};}
 function validateAPIKey(raw){const key=String(raw||'').trim();assert(key.length>=12&&key.length<=512&&/^[\x21-\x7e]+$/.test(key),'请填写完整有效的 API 密钥。',422);return key;}
 function keyFrom(req){return validateAPIKey(req.headers.get('x-jitu-key'));}
 async function vaultKey(env){assert(/^[a-f0-9]{64}$/.test(env.API_VAULT_KEY||''),'API 密钥存储尚未就绪，请稍后重试。',503);return crypto.subtle.importKey('raw',unhex(env.API_VAULT_KEY),'AES-GCM',false,['encrypt','decrypt']);}
@@ -100,9 +100,90 @@ async function taskKey(req,env,user,task){
  if(task.api_key_hash){const profile=await one(env.DB,'SELECT * FROM api_profiles WHERE user_id=? AND key_hash=?',user.id,task.api_key_hash);if(profile)return decryptAPIKey(env,profile);const selected=await requestKey(req,env,user);assert(await sha(selected.key)===task.api_key_hash,'这次任务需要原来的 API，请重新添加原密钥后查询。',422);return selected.key;}
  return (await requestKey(req,env,user)).key;
 }
-async function visibleTask(env,user,id){const task=await one(env.DB,'SELECT tasks.* FROM tasks LEFT JOIN conversations c ON c.id=tasks.conversation_id WHERE tasks.id=? AND tasks.user_id=? AND c.deleted_at IS NULL',id,user.id);assert(task,'找不到这次创作记录。',404);return task;}
-async function cleanDeletedConversation(env,user,id){
- try{const rows=await env.DB.prepare('SELECT * FROM tasks WHERE user_id=? AND conversation_id=?').bind(user.id,id).all();const keys=rows.results.flatMap(t=>taskReferences(t).map(r=>r.key));if(keys.length){if(!env.BUCKET)return false;for(let i=0;i<keys.length;i+=100)await env.BUCKET.delete(keys.slice(i,i+100));}await run(env.DB,'DELETE FROM tasks WHERE user_id=? AND conversation_id=?',user.id,id);return true;}catch{return false;}
+async function visibleTask(env,user,id){const task=await one(env.DB,'SELECT tasks.* FROM tasks LEFT JOIN conversations c ON c.id=COALESCE(tasks.conversation_id,tasks.id) WHERE tasks.id=? AND tasks.user_id=? AND c.deleted_at IS NULL',id,user.id);assert(task,'找不到这次创作记录。',404);return task;}
+async function cleanDeletedConversation(env,user,id,check=async()=>{}){
+ try{
+  for(;;){
+   const rows=await env.DB.prepare('SELECT * FROM tasks WHERE user_id=? AND (conversation_id=? OR (conversation_id IS NULL AND id=?)) LIMIT 100').bind(user.id,id,id).all();
+   if(!rows.results.length)break;
+   const keys=rows.results.flatMap(t=>taskReferences(t).map(r=>{assert(r.key.startsWith(`references/${user.id}/${t.id}/`),'图片归属信息不正确。',503);return r.key;}));
+   if(keys.length){if(!env.BUCKET)return false;for(let i=0;i<keys.length;i+=100)await env.BUCKET.delete(keys.slice(i,i+100));}
+   await check();
+   await run(env.DB,`DELETE FROM tasks WHERE user_id=? AND id IN (${rows.results.map(()=>'?').join(',')})`,user.id,...rows.results.map(t=>t.id));
+  }
+  await run(env.DB,"UPDATE conversations SET title='',settings=NULL WHERE id=? AND user_id=? AND deleted_at IS NOT NULL",id,user.id);
+  return true;
+ }catch{return false;}
+}
+// GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
+export const USER_STORAGE_LIMIT = 1_000_000_000;
+export const RELEASES = [{
+ version:'2026.10.19.1',date:'2026-10-19',title:'更新日志与个人存储空间',
+ changes:['新增更新日志：每次版本更新后首次访问会显示更新内容，也可随时从侧栏查看。','每个账号提供 1 GB 聊天与上传素材空间，可在「我的账号」查看用量。','空间不足时自动清理最早的聊天及其参考图、遮罩，并保留清理通知；正在生成的会话暂不清理。','请及时下载生成结果；生图供应商的结果图片仍按原规则保留约 12 小时。']
+}];
+const storageText = field => `length(CAST(COALESCE(${field},'') AS BLOB))`;
+const TASK_STORAGE_SQL = `4096+${['prompt','model','size','ui_settings','reference_files'].map(storageText).join('+')}+COALESCE((SELECT SUM(MAX(0,CAST(json_extract(value,'$.size') AS INTEGER))) FROM json_each(CASE WHEN json_valid(reference_files) THEN reference_files ELSE '[]' END)),0)`;
+const CONVERSATION_STORAGE_SQL = `512+${storageText('title')}+${storageText('settings')}`;
+export async function storageUsage(env,userId,conversationId=null) {
+ const filter=conversationId?' AND (conversation_id=? OR (conversation_id IS NULL AND id=?))':'';
+ const tasks=await one(env.DB,`SELECT COALESCE(SUM(${TASK_STORAGE_SQL}),0) AS bytes,COUNT(*) AS count FROM tasks WHERE user_id=?${filter}`,userId,...(conversationId?[conversationId,conversationId]:[]));
+ const chats=await one(env.DB,`SELECT COALESCE(SUM(${CONVERSATION_STORAGE_SQL}),0) AS bytes FROM conversations WHERE user_id=?${conversationId?' AND id=?':''}`,userId,...(conversationId?[conversationId]:[]));
+ return {bytes:Number(tasks.bytes)+Number(chats.bytes),tasks:Number(tasks.count)};
+}
+async function withStorageLock(env,user,action) {
+ const token=uid(),time=Date.now();
+ const row=await one(env.DB,'INSERT INTO account_storage(user_id,lease_token,lease_until) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET lease_token=excluded.lease_token,lease_until=excluded.lease_until WHERE account_storage.lease_until<=? RETURNING user_id',user.id,token,time+120000,time);
+ assert(row,'空间正在整理，请稍后重试；生图请求可使用「恢复原提交」。',429);
+ let lost=false;
+ const check=async()=>{assert(!lost,'空间整理已中断，请稍后重试。',503);const r=await one(env.DB,'SELECT lease_token FROM account_storage WHERE user_id=?',user.id);assert(r?.lease_token===token,'空间整理已中断，请稍后重试。',503);};
+ const timer=setInterval(()=>{run(env.DB,'UPDATE account_storage SET lease_until=? WHERE user_id=? AND lease_token=?',Date.now()+120000,user.id,token).catch(()=>{lost=true;});},20000);
+ try{return await action(check);}finally{clearInterval(timer);await run(env.DB,'UPDATE account_storage SET lease_token=NULL,lease_until=0 WHERE user_id=? AND lease_token=?',user.id,token);}
+}
+async function quotaRemoveConversation(env,user,id,check) {
+ const summary=await storageUsage(env,user.id,id);await check();
+ // The tombstone and persistent notification are committed together before removing files.
+ await env.DB.batch([
+  env.DB.prepare("INSERT INTO conversations(id,user_id,title,created_at,updated_at,deleted_at) VALUES(?,?,'',?,?,?) ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at,title='',settings=NULL WHERE conversations.user_id=excluded.user_id").bind(id,user.id,now(),now(),now()),
+  env.DB.prepare('UPDATE account_storage SET notice_revision=notice_revision+1,notice_conversations=CASE WHEN notice_revision=acknowledged_revision THEN 1 ELSE notice_conversations+1 END,notice_tasks=CASE WHEN notice_revision=acknowledged_revision THEN ? ELSE notice_tasks+? END,notice_at=? WHERE user_id=?').bind(summary.tasks,summary.tasks,now(),user.id)
+ ]);
+ assert(await cleanDeletedConversation(env,user,id,check),'最早的聊天已移除，图片文件清理暂未完成，请稍后重试。',503);
+}
+export async function enforceStorage(env,user,protectedId=null,reserveBytes=0,check=async()=>{}) {
+ // Retry incomplete physical deletes first. Never forget a file manifest before deletion succeeds.
+ const pending=await env.DB.prepare('SELECT c.id FROM conversations c WHERE c.user_id=? AND c.deleted_at IS NOT NULL AND EXISTS(SELECT 1 FROM tasks t WHERE t.user_id=c.user_id AND (t.conversation_id=c.id OR (t.conversation_id IS NULL AND t.id=c.id)))').bind(user.id).all();
+ for(const c of pending.results){await check();assert(await cleanDeletedConversation(env,user,c.id,check),'图片文件仍在清理，请稍后重试。',503);}
+ const limit=USER_STORAGE_LIMIT;
+ let usage=await storageUsage(env,user.id);
+ if(usage.bytes+reserveBytes<=limit)return usage;
+ if(protectedId){const current=await storageUsage(env,user.id,protectedId);assert(current.bytes+reserveBytes<=limit,'当前会话已接近 1 GB，请新建会话后再提交。',507);}
+ while(usage.bytes+reserveBytes>limit){
+  const candidate=await one(env.DB,`SELECT id FROM (
+   SELECT c.id,c.created_at FROM conversations c WHERE c.user_id=? AND c.deleted_at IS NULL AND c.id<>? AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=c.id AND t.user_id=c.user_id AND t.status IN ('submitting','unknown','queued','running') AND t.created_at>?)
+   UNION ALL SELECT t.id,t.created_at FROM tasks t WHERE t.user_id=? AND t.conversation_id IS NULL AND t.id<>? AND NOT(t.status IN ('submitting','unknown','queued','running') AND t.created_at>?)
+  ) ORDER BY created_at,id LIMIT 1`,user.id,protectedId||'',now()-43200,user.id,protectedId||'',now()-43200);
+  assert(candidate,'空间已满，正在生成的会话暂不清理。请等待任务结束，或手动删除不需要的会话。',507);
+  await quotaRemoveConversation(env,user,candidate.id,check);
+  const next=await storageUsage(env,user.id);assert(next.bytes<usage.bytes,'空间暂时无法释放，请稍后重试。',503);usage=next;
+ }
+ return usage;
+}
+async function storageSnapshot(env,user) {
+ const usage=await storageUsage(env,user.id),state=await one(env.DB,'SELECT * FROM account_storage WHERE user_id=?',user.id);
+ const pending=await one(env.DB,'SELECT 1 AS found FROM conversations c JOIN tasks t ON (t.conversation_id=c.id OR (t.conversation_id IS NULL AND t.id=c.id)) AND t.user_id=c.user_id WHERE c.user_id=? AND c.deleted_at IS NOT NULL LIMIT 1',user.id);
+ return {usedBytes:usage.bytes,limitBytes:USER_STORAGE_LIMIT,pendingCleanup:!!pending,notice:state&&state.notice_revision>state.acknowledged_revision?{revision:state.notice_revision,conversations:state.notice_conversations,tasks:state.notice_tasks,createdAt:state.notice_at}:null};
+}
+export async function maintainAccountStorage(env,user) {
+ return withStorageLock(env,user,async check=>{
+  let cleanupError=null;try{await enforceStorage(env,user,null,0,check);}catch(e){if(!(e instanceof AppError))throw e;cleanupError=e.message;}
+  return {...await storageSnapshot(env,user),cleanupError};
+ });
+}
+export async function maintainExistingStorage(env) {
+ let after='',failures=0;
+ for(;;){const rows=await env.DB.prepare('SELECT id FROM users WHERE id>? ORDER BY id LIMIT 100').bind(after).all();if(!rows.results.length)break;
+  for(const user of rows.results){try{const s=await maintainAccountStorage(env,user);if(s.cleanupError)failures++;}catch{failures++;}after=user.id;}
+ }
+ return {failures};
 }
 export function validateParams(p) {
   assert(['text','edit','mask'].includes(p.mode),'请选择正确的创作模式。');
@@ -166,6 +247,11 @@ function cleanSettings(raw) {
   }
   return JSON.stringify(settings);
 }
+async function checkConversationTarget(env,user,id){
+ assert(/^[a-f0-9-]{36}$/.test(id||''),'会话编号无效。');
+ const c=await one(env.DB,'SELECT user_id,deleted_at FROM conversations WHERE id=?',id);assert(!c||(c.user_id===user.id&&!c.deleted_at),'找不到这个生图会话。',404);
+ const t=await one(env.DB,'SELECT user_id FROM tasks WHERE id=? AND conversation_id IS NULL',id);assert(!t||t.user_id===user.id,'找不到这个生图会话。',404);
+}
 async function ensureConversation(db,user,id,title,settings=null) {
   assert(/^[a-f0-9-]{36}$/.test(id||''),'会话编号无效。');
   const existing=await one(db,'SELECT * FROM conversations WHERE id=?',id);
@@ -181,26 +267,26 @@ async function ensureConversation(db,user,id,title,settings=null) {
 }
 function publicConversation(c) {let settings=null;try{settings=JSON.parse(c.settings);}catch{}return {id:c.id,title:c.title,settings,pinned:!!c.pinned,createdAt:c.created_at,updatedAt:c.updated_at};}
 function taskReferences(task) {try{const refs=JSON.parse(task.reference_files);return Array.isArray(refs)?refs:[];}catch{return [];}}
+function referenceManifest(userId,taskId,inputs){return inputs.map(({file,kind,hash},index)=>({key:`references/${userId}/${taskId}/${index}-${hash}`,index,kind,name:String(file.name||`${kind}-${index+1}`).slice(0,240),type:file.type,size:file.size}));}
+const textBytes=value=>enc.encode(value||'').length;
 async function saveTaskReferences(env,user,task,inputs) {
-  if(!inputs.length||taskReferences(task).length)return;
-  assert(env.BUCKET,'参考图存储尚未就绪，请稍后恢复原提交；尚未提交生图请求。',503);
-  const references=[];
-  try {
-    // Persist the exact originals before calling the paid upstream endpoint.
-    for(let index=0;index<inputs.length;index++) {
-      const {file,kind,hash}=inputs[index];
-      const key=`references/${user.id}/${task.id}/${index}-${hash}`;
-      await env.BUCKET.put(key,file,{httpMetadata:{contentType:file.type}});
-      references.push({key,index,kind,name:String(file.name||`${kind}-${index+1}`).slice(0,240),type:file.type,size:file.size});
-    }
-    const conversation=await one(env.DB,'SELECT deleted_at FROM conversations WHERE id=?',task.conversation_id);if(conversation?.deleted_at){await env.BUCKET.delete(references.map(r=>r.key));throw new AppError('这段会话已删除，无法继续提交。',404);}
-    const serialized=JSON.stringify(references);
-    await run(env.DB,'UPDATE tasks SET reference_files=? WHERE id=? AND user_id=?',serialized,task.id,user.id);
-    task.reference_files=serialized;
-  } catch {throw new AppError('参考图保存失败，请稍后恢复原提交；尚未提交生图请求。',503);}
+ if(!inputs.length||(taskReferences(task).length&&task.references_ready!==0))return;
+ assert(env.BUCKET,'参考图存储尚未就绪，请稍后恢复原提交；尚未提交生图请求。',503);
+ const references=referenceManifest(user.id,task.id,inputs);
+ // Persist the whole manifest before any put, so interrupted/failed writes remain accounted for.
+ await run(env.DB,'UPDATE tasks SET reference_files=?,references_ready=0 WHERE id=? AND user_id=?',JSON.stringify(references),task.id,user.id);
+ task.reference_files=JSON.stringify(references);task.references_ready=0;
+ try{
+  for(let i=0;i<inputs.length;i++)await env.BUCKET.put(references[i].key,inputs[i].file,{httpMetadata:{contentType:references[i].type}});
+  await run(env.DB,'UPDATE tasks SET references_ready=1 WHERE id=? AND user_id=?',task.id,user.id);task.references_ready=1;
+ }catch{
+  try{await env.BUCKET.delete(references.map(r=>r.key));await run(env.DB,'UPDATE tasks SET reference_files=NULL,references_ready=1 WHERE id=? AND user_id=?',task.id,user.id);task.reference_files=null;task.references_ready=1;}catch{}
+  throw new AppError('参考图保存失败，请稍后恢复原提交；尚未提交生图请求。',503);
+ }
 }
 async function downloadReference(env,user,id,index) {
   const task=await visibleTask(env,user,id);
+  assert(task.references_ready!==0,'参考图仍待保存完成，请先恢复原提交。',503);
   const reference=taskReferences(task).find(r=>r.index===index);assert(reference,'这张原参考图未保存，请重新上传。',404);
   assert(env.BUCKET,'参考图存储暂时不可用，请稍后重试。',503);
   const object=await env.BUCKET.get(reference.key);assert(object,'这张原参考图暂时无法读取，请重新上传或稍后重试。',404);
@@ -226,15 +312,34 @@ async function createTask(req,env,user) {
   const existing=await one(env.DB,'SELECT * FROM tasks WHERE user_id=? AND idempotency_key=?',user.id,idem);
   if(existing){assert(existing.fingerprint===fingerprint,'恢复原提交时，请保持原来的文字、参数和图片不变。',409);if(existing.upstream_id || ['succeeded','failed','expired'].includes(existing.status))return json({task:publicTask(existing)});}
   await rate(env.DB,`generate:${user.id}`,20,60);
-  if(!existing){
-    const taskId=uid();conversationId=await ensureConversation(env.DB,user,conversationId||taskId,p.prompt,uiSettings);
-    await run(env.DB,'INSERT OR IGNORE INTO tasks (id,user_id,idempotency_key,fingerprint,mode,prompt,model,size,count,status,created_at,updated_at,conversation_id,ui_settings,api_profile_id,api_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',taskId,user.id,idem,fingerprint,p.mode,p.prompt,p.model,p.size,p.n,'submitting',now(),now(),conversationId,uiSettings,profileId,await sha(key));
+  let task;
+  await withStorageLock(env,user,async check=>{
+   const current=await one(env.DB,'SELECT * FROM tasks WHERE user_id=? AND idempotency_key=?',user.id,idem);
+   if(current){assert(current.fingerprint===fingerprint,'恢复原提交时，请保持原参数不变。',409);task=current;}
+   const taskId=current?.id||uid();
+   const target=current?.conversation_id||conversationId||taskId;
+   if(target){const c=await one(env.DB,'SELECT user_id,deleted_at FROM conversations WHERE id=?',target);assert(!c||(c.user_id===user.id&&!c.deleted_at),'找不到这个生图会话。',404);const legacy=await one(env.DB,'SELECT user_id FROM tasks WHERE id=? AND conversation_id IS NULL',target);assert(!legacy||legacy.user_id===user.id,'找不到这个生图会话。',404);}
+   const chat=await one(env.DB,'SELECT title,settings FROM conversations WHERE id=? AND user_id=?',target,user.id);
+   const legacy=chat?null:await one(env.DB,'SELECT prompt FROM tasks WHERE id=? AND user_id=? AND conversation_id IS NULL',target,user.id);
+   let reserve=current?0:4096+textBytes(p.prompt)+textBytes(p.model)+textBytes(p.size)+textBytes(uiSettings);
+   if(!current)reserve+=chat?Math.max(0,textBytes(uiSettings||chat.settings)-textBytes(chat.settings)):512+textBytes((legacy?.prompt||p.prompt).slice(0,60))+textBytes(uiSettings);
+   if(referenceInputs.length&&(!current||!taskReferences(current).length||current.references_ready===0)){
+    const refs=referenceManifest(user.id,taskId,referenceInputs),oldRefs=current?taskReferences(current):[];
+    reserve+=Math.max(0,textBytes(JSON.stringify(refs))+refs.reduce((n,r)=>n+r.size,0)-textBytes(current?.reference_files)-oldRefs.reduce((n,r)=>n+Number(r.size||0),0));
+   }
+   await enforceStorage(env,user,target,reserve,check);
+   if(!current){
+    conversationId=await ensureConversation(env.DB,user,target,p.prompt,uiSettings);
+    await run(env.DB,'INSERT INTO tasks (id,user_id,idempotency_key,fingerprint,mode,prompt,model,size,count,status,created_at,updated_at,conversation_id,ui_settings,api_profile_id,api_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',taskId,user.id,idem,fingerprint,p.mode,p.prompt,p.model,p.size,p.n,'submitting',now(),now(),conversationId,uiSettings,profileId,await sha(key));
     await run(env.DB,'UPDATE conversations SET settings=COALESCE(?,settings),updated_at=? WHERE id=? AND user_id=?',uiSettings,now(),conversationId,user.id);
-  }
-  const task=await one(env.DB,'SELECT * FROM tasks WHERE user_id=? AND idempotency_key=?',user.id,idem);
-  assert(task.fingerprint===fingerprint,'提交内容发生了变化，请恢复原提交内容。',409);
+    task=await one(env.DB,'SELECT * FROM tasks WHERE id=?',taskId);
+   }
+   if(task.upstream_id||['succeeded','failed','expired'].includes(task.status))return;
+   try{await saveTaskReferences(env,user,task,referenceInputs);await check();await enforceStorage(env,user,task.conversation_id||task.id,0,check);}catch(e){await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?','unknown',storedError(e),now(),task.id);throw e;}
+  });
+  if(task.upstream_id||['succeeded','failed','expired'].includes(task.status))return json({task:publicTask(task)});
   let data;
-  try {await saveTaskReferences(env,user,task,referenceInputs);await visibleTask(env,user,task.id);data=await upstreamJSON(await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward}));}
+  try{await visibleTask(env,user,task.id);data=await upstreamJSON(await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward}));}
   catch(e){const ambiguous=e.status>=500||e.status===429;await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?',ambiguous?'unknown':'failed',storedError(e),now(),task.id);throw e;}
   const upstreamID=data.id??data.jitu?.request_id;assert(upstreamID!=null,'生图服务未返回任务编号，请保留原提交并稍后核对。',502);
   assert(/^[a-zA-Z0-9_-]{1,150}$/.test(String(upstreamID)),'生图服务返回的任务编号无法识别，请联系支持核对。',502);
@@ -243,7 +348,7 @@ async function createTask(req,env,user) {
   await run(env.DB,'UPDATE tasks SET upstream_id=?,status=?,error=?,updated_at=? WHERE id=?',String(upstreamID),status,error,now(),task.id);
   return json({task:publicTask({...task,upstream_id:String(upstreamID),status,error}),result:data.data?data:undefined},202);
 }
-export function publicTask(t) {const errorInfo=readTaskError(t.error);let uiSettings=null;try{uiSettings=JSON.parse(t.ui_settings);}catch{}return {id:t.id,conversationId:t.conversation_id||t.id,uiSettings,apiProfileId:t.api_profile_id||null,references:taskReferences(t).map(({index,kind,name,type,size})=>({index,kind,name,type,size})),upstreamId:t.upstream_id,idempotencyKey:t.idempotency_key,mode:t.mode,prompt:t.prompt,model:t.model,size:t.size,n:t.count,status:t.created_at+43200<now()&&['succeeded','queued','running'].includes(t.status)?'expired':t.status,error:errorInfo?.reason||null,errorInfo,createdAt:t.created_at,updatedAt:t.updated_at,charged:t.charged,balance:t.balance};}
+export function publicTask(t) {const errorInfo=readTaskError(t.error);let uiSettings=null;try{uiSettings=JSON.parse(t.ui_settings);}catch{}return {id:t.id,conversationId:t.conversation_id||t.id,uiSettings,apiProfileId:t.api_profile_id||null,references:(t.references_ready===0?[]:taskReferences(t)).map(({index,kind,name,type,size})=>({index,kind,name,type,size})),upstreamId:t.upstream_id,idempotencyKey:t.idempotency_key,mode:t.mode,prompt:t.prompt,model:t.model,size:t.size,n:t.count,status:t.created_at+43200<now()&&['succeeded','queued','running'].includes(t.status)?'expired':t.status,error:errorInfo?.reason||null,errorInfo,createdAt:t.created_at,updatedAt:t.updated_at,charged:t.charged,balance:t.balance};}
 async function taskResult(env,user,id,req) {
   const task=await visibleTask(env,user,id);
   if(!task.upstream_id)return {task:publicTask(task)};
@@ -286,6 +391,7 @@ export function createHandler(assets) {
       const ip=req.headers.get('cf-connecting-ip')||'unknown';
       if(path==='/api/config' && req.method==='GET')return json({authMethods:['password'],registrationEnabled:mailReady(env),emailCodeEnabled:mailReady(env),passwordResetEnabled:mailReady(env),registrationRequiresEmailCode:true});
       const user=await getSession(req,env.DB);
+      if(path==='/api/updates'&&req.method==='GET')return json({current:RELEASES[0],releases:RELEASES});
       if(path==='/api/me' && req.method==='GET')return json({user:user?publicUser(user):null});
       if(path==='/api/auth/code/send'&&req.method==='POST'){
         const input=await bodyJSON(req),email=validEmail(input.email);assert(['register','reset'].includes(input.purpose),'请选择注册或找回密码。');
@@ -320,6 +426,10 @@ export function createHandler(assets) {
         const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return await sessionResponse(env.DB,account);
       }
       assert(user,'请先登录你的账号。',401);
+      if(path==='/api/updates/seen'&&req.method==='POST'){const input=await bodyJSON(req);assert(input.version===RELEASES[0].version,'网站已有新版本，请刷新后查看。',409);await run(env.DB,'UPDATE users SET last_seen_release=? WHERE id=?',input.version,user.id);return json({ok:true});}
+      if(path==='/api/storage'&&req.method==='GET')return json(await maintainAccountStorage(env,user));
+      if(path==='/api/storage/ack'&&req.method==='POST'){const input=await bodyJSON(req);assert(Number.isSafeInteger(input.revision)&&input.revision>0,'清理通知编号无效。');await run(env.DB,'UPDATE account_storage SET acknowledged_revision=MAX(acknowledged_revision,?) WHERE user_id=? AND notice_revision>=?',input.revision,user.id,input.revision);return json({ok:true});}
+
       if(path==='/api/auth/password/set' && req.method==='POST') {
         const input=await bodyJSON(req);validatePassword(input.password);
         assert(input.password===input.confirmPassword,'两次输入的密码不一致。');
@@ -351,23 +461,23 @@ export function createHandler(assets) {
         if(req.method==='DELETE'){await run(env.DB,'DELETE FROM api_profiles WHERE id=? AND user_id=?',profile.id,user.id);if(user.selected_api_id===profile.id)await run(env.DB,'UPDATE users SET selected_api_id=NULL WHERE id=?',user.id);return json({ok:true});}
         await run(env.DB,'UPDATE users SET selected_api_id=? WHERE id=?',profile.id,user.id);return json({ok:true});
       }
-      if(path==='/api/conversations'&&req.method==='POST'){
-        const input=await bodyJSON(req);assert(typeof input.title==='string'&&input.title.trim()&&input.title.length<=60,'会话名称请填写 1 至 60 个字符。');assert(input.pinned==null||typeof input.pinned==='boolean','置顶设置格式不正确。');await ensureConversation(env.DB,user,input.id,input.title,cleanSettings(input.settings));await run(env.DB,'UPDATE conversations SET title=?,pinned=?,updated_at=? WHERE id=? AND user_id=?',input.title.trim(),input.pinned?1:0,now(),input.id,user.id);return json({ok:true},201);
-      }
+      if(path==='/api/conversations'&&req.method==='POST')return await withStorageLock(env,user,async check=>{
+        const input=await bodyJSON(req);assert(typeof input.title==='string'&&input.title.trim()&&input.title.length<=60,'会话名称请填写 1 至 60 个字符。');assert(input.pinned==null||typeof input.pinned==='boolean','置顶设置格式不正确。');const settings=cleanSettings(input.settings);await checkConversationTarget(env,user,input.id);const previous=await one(env.DB,'SELECT title,settings FROM conversations WHERE id=? AND user_id=?',input.id,user.id);const growth=previous?Math.max(0,textBytes(input.title.trim())-textBytes(previous.title)):512+textBytes(input.title.trim())+textBytes(settings);await enforceStorage(env,user,input.id,growth,check);await ensureConversation(env.DB,user,input.id,input.title,settings);await run(env.DB,'UPDATE conversations SET title=?,pinned=?,updated_at=? WHERE id=? AND user_id=?',input.title.trim(),input.pinned?1:0,now(),input.id,user.id);return json({ok:true},201);
+      });
       if(path==='/api/conversations' && req.method==='GET') {
         const list=await env.DB.prepare('SELECT * FROM conversations WHERE user_id=? AND deleted_at IS NULL ORDER BY pinned DESC,updated_at DESC').bind(user.id).all();
-        const retry=await one(env.DB,'SELECT c.id FROM conversations c WHERE c.user_id=? AND c.deleted_at IS NOT NULL AND EXISTS (SELECT 1 FROM tasks t WHERE t.conversation_id=c.id) LIMIT 1',user.id);if(retry){const cleanup=cleanDeletedConversation(env,user,retry.id);if(ctx?.waitUntil)ctx.waitUntil(cleanup);else await cleanup;}
+        const retry=await one(env.DB,'SELECT c.id FROM conversations c WHERE c.user_id=? AND c.deleted_at IS NOT NULL AND EXISTS (SELECT 1 FROM tasks t WHERE t.conversation_id=c.id) LIMIT 1',user.id);if(retry)await withStorageLock(env,user,async check=>{await cleanDeletedConversation(env,user,retry.id,check);});
         return json({conversations:list.results.map(publicConversation)});
       }
       const conversationMatch=path.match(/^\/api\/conversations\/([a-f0-9-]{36})$/);
-      if(conversationMatch&&['PATCH','DELETE'].includes(req.method)) {
+      if(conversationMatch&&['PATCH','DELETE'].includes(req.method))return await withStorageLock(env,user,async check=>{
         const id=conversationMatch[1];const own=await one(env.DB,'SELECT * FROM conversations WHERE id=? AND user_id=?',id,user.id);const legacy=await one(env.DB,'SELECT * FROM tasks WHERE id=? AND user_id=? AND conversation_id IS NULL',id,user.id);assert(own||legacy,'找不到这个生图会话。',404);
-        if(req.method==='DELETE'){if(!own)await ensureConversation(env.DB,user,id,legacy.prompt);await run(env.DB,'UPDATE conversations SET deleted_at=?,pinned=0 WHERE id=? AND user_id=?',now(),id,user.id);const cleaned=await cleanDeletedConversation(env,user,id);return json({ok:true,cleanupPending:!cleaned});}
+        if(req.method==='DELETE'){if(!own)await ensureConversation(env.DB,user,id,legacy.prompt);await run(env.DB,'UPDATE conversations SET deleted_at=?,pinned=0 WHERE id=? AND user_id=?',now(),id,user.id);const cleaned=await cleanDeletedConversation(env,user,id,check);return json({ok:true,cleanupPending:!cleaned});}
         assert(!own?.deleted_at,'这段会话已删除。',404);const input=await bodyJSON(req);assert(input.title!==undefined||input.pinned!==undefined,'请选择要更新的会话设置。');
         if(input.title!==undefined)assert(typeof input.title==='string'&&input.title.trim()&&input.title.length<=60,'会话名称请填写 1 至 60 个字符。');if(input.pinned!==undefined)assert(typeof input.pinned==='boolean','置顶设置格式不正确。');
-        await ensureConversation(env.DB,user,id,input.title||legacy?.prompt||own.title);if(input.title!==undefined)await run(env.DB,'UPDATE conversations SET title=?,updated_at=? WHERE id=? AND user_id=?',input.title.trim(),now(),id,user.id);if(input.pinned!==undefined)await run(env.DB,'UPDATE conversations SET pinned=? WHERE id=? AND user_id=?',input.pinned?1:0,id,user.id);return json({ok:true});
-      }
-      if(path==='/api/tasks' && req.method==='GET'){const records=await env.DB.prepare('SELECT t.* FROM tasks t LEFT JOIN conversations c ON c.id=t.conversation_id WHERE t.user_id=? AND c.deleted_at IS NULL ORDER BY t.created_at DESC,t.rowid DESC LIMIT 500').bind(user.id).all();return json({tasks:records.results.map(publicTask)});}
+        const growth=input.title===undefined?0:Math.max(0,textBytes(input.title.trim())-textBytes(own?.title));await enforceStorage(env,user,id,own?growth:512+textBytes((input.title||legacy?.prompt||'').slice(0,60)),check);await ensureConversation(env.DB,user,id,input.title||legacy?.prompt||own.title);if(input.title!==undefined)await run(env.DB,'UPDATE conversations SET title=?,updated_at=? WHERE id=? AND user_id=?',input.title.trim(),now(),id,user.id);if(input.pinned!==undefined)await run(env.DB,'UPDATE conversations SET pinned=? WHERE id=? AND user_id=?',input.pinned?1:0,id,user.id);return json({ok:true});
+      });
+      if(path==='/api/tasks' && req.method==='GET'){const records=await env.DB.prepare('SELECT t.* FROM tasks t LEFT JOIN conversations c ON c.id=COALESCE(t.conversation_id,t.id) WHERE t.user_id=? AND c.deleted_at IS NULL ORDER BY t.created_at DESC,t.rowid DESC LIMIT 500').bind(user.id).all();return json({tasks:records.results.map(publicTask)});}
       if(path==='/api/tasks' && req.method==='POST')return await createTask(req,env,user);
       const referenceMatch=path.match(/^\/api\/tasks\/([a-f0-9-]{36})\/references\/(\d+)$/);
       if(referenceMatch&&req.method==='GET') {await rate(env.DB,`reference:${user.id}`,120,60);return await downloadReference(env,user,referenceMatch[1],Number(referenceMatch[2]));}
