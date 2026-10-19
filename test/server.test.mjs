@@ -60,6 +60,8 @@ test('self-host origin checks work behind Nginx and forwarded headers cannot byp
  const mock=mockUpstream(),dir=await mkdtemp(join(tmpdir(),'meow-proxy-'));migrate(dir);const app=await launch(dir,mock);
  try{
   assert.equal((await app.request('/healthz')).status,200);
+  const page=await (await app.request('/')).text();assert.match(page,/id="activity-open" hidden/);assert.match(page,/id="activity-dialog"/);
+  const activityAsset=await app.request('/activity.js');assert.equal(activityAsset.status,200);assert.match(await activityAsset.text(),/mountActivity/);
   assert.equal((await app.request('/',{headers:{host:'evil.example'}})).status,421);
   assert.equal((await app.request('/api/auth/password/register',{body:{},headers:{origin:'https://evil.example'}})).status,403);
   const body={email:'proxy@example.com',password:'test-password-123',confirmPassword:'test-password-123'};

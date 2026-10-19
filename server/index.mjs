@@ -15,7 +15,7 @@ export async function createServer({origin,dataDir,vaultKey,resendApiKey,emailFr
  if(!/^[a-f0-9]{64}$/.test(vaultKey||''))throw new Error('API_VAULT_KEY must contain 64 lowercase hexadecimal characters.');
  if(!dataDir)throw new Error('DATA_DIR is required.');
  const assets={};
- for(const [name,type] of [['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['app.js','application/javascript; charset=utf-8'],['parameters.js','application/javascript; charset=utf-8'],['brand-mark.svg','image/svg+xml']]){
+ for(const [name,type] of [['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['app.js','application/javascript; charset=utf-8'],['parameters.js','application/javascript; charset=utf-8'],['activity.js','application/javascript; charset=utf-8'],['brand-mark.svg','image/svg+xml']]){
   assets['/'+name]={type,content:await readFile(new URL('../public/'+name,import.meta.url),'utf8')};
  }
  assets['/favicon.svg']=assets['/brand-mark.svg'];

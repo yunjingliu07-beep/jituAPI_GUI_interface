@@ -9,7 +9,8 @@ const migrations=[
  ['0002_task_references','tasks','reference_files'],
  ['0003_account_workflow','users','onboarding_completed_at'],
  ['0004_updates_storage','users','last_seen_release'],
- ['0005_invitations','users','role']
+ ['0005_invitations','users','role'],
+ ['0006_owner_activity','api_activity','task_id']
 ];
 export function databaseFile(directory){return resolve(directory,'studio.sqlite');}
 export function migrate(directory){
@@ -35,6 +36,7 @@ export function openDatabase(directory){
  raw.prepare('SELECT pinned,deleted_at FROM conversations LIMIT 0').all();
  raw.prepare('SELECT notice_revision FROM account_storage LIMIT 0').all();
  raw.prepare('SELECT code_hash,used_by FROM registration_invitations LIMIT 0').all();
+ raw.prepare('SELECT task_id,source,outcome FROM api_activity LIMIT 0').all();
  return {raw,batch(statements){raw.exec('BEGIN IMMEDIATE');try{const results=statements.map(s=>s._batchRun());raw.exec('COMMIT');return Promise.resolve(results);}catch(e){raw.exec('ROLLBACK');throw e;}},prepare(sql){let values=[];const statement=raw.prepare(sql);const query={
   _batchRun(){const r=statement.run(...values);return {success:true,meta:{changes:r.changes}};},
   bind(...args){values=args;return query;},

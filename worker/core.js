@@ -128,6 +128,46 @@ async function usableInvitation(env,raw){
 }
 function requireAdministrator(user){assert(['owner','admin'].includes(user.role),'此功能仅限管理员使用。',403);}
 function requireOwner(user){assert(user.role==='owner','只有站长可以管理管理员。',403);}
+function activityFilters(req,column){
+ const params=new URL(req.url).searchParams,email=(params.get('email')||'').trim().toLowerCase(),raw=params.get('offset')||'0';
+ assert(email.length<=254,'邮箱筛选最多 254 个字符。');assert(/^\d{1,7}$/.test(raw),'分页参数无效。');
+ const where=[],args=[];if(email){where.push('instr(lower(email),?)>0');args.push(email);}
+ const userId=params.get('userId');if(userId){assert(/^[a-f0-9-]{36}$/.test(userId),'账号筛选无效。');where.push((column==='created_at'?'id':'user_id')+'=?');args.push(userId);}
+ let from=null,to=null;
+ for(const name of ['from','to']){
+  const value=params.get(name);if(!value)continue;
+  assert(/^\d{4}-\d{2}-\d{2}$/.test(value),'日期格式应为 YYYY-MM-DD。');
+  const utc=Date.parse(value+'T00:00:00Z');assert(Number.isFinite(utc)&&new Date(utc).toISOString().slice(0,10)===value,'日期无效。');
+  const timestamp=utc/1000-28800;
+  if(name==='from'){from=timestamp;where.push(`${column}>=?`);args.push(timestamp);}
+  else{to=timestamp;where.push(`${column}<?`);args.push(timestamp+86400);}
+ }
+ assert(from===null||to===null||from<=to,'开始日期不能晚于结束日期。');
+ return {where:where.length?' WHERE '+where.join(' AND '):'',args,offset:Number(raw)};
+}
+async function ownerActivity(req,env,user,path){
+ assert(user.role==='owner','用户与调用记录仅限站长查看。',403);
+ assert(req.method==='GET','此页面仅支持查询。',405);
+ const users=path==='/api/admin/activity/users';assert(users||path==='/api/admin/activity/calls','没有找到这个管理功能。',404);
+ const {where,args,offset}=activityFilters(req,users?'created_at':'started_at');
+ const totalUsers=await one(env.DB,'SELECT COUNT(*) AS n FROM users');
+ if(users){
+  const count=await one(env.DB,`SELECT COUNT(*) AS n FROM users${where}`,...args);
+  const rows=await env.DB.prepare(`SELECT id,email,role,created_at,
+   (SELECT COUNT(DISTINCT a.task_id) FROM api_activity a WHERE a.user_id=users.id) AS task_count,
+   (SELECT COUNT(*) FROM api_activity a WHERE a.user_id=users.id AND a.source='live') AS call_count,
+   (SELECT MAX(a.started_at) FROM api_activity a WHERE a.user_id=users.id AND a.source='live') AS last_call_at
+   FROM users${where} ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?`).bind(...args,offset).all();
+  return json({totalUsers:totalUsers.n,total:count.n,offset,nextOffset:offset+rows.results.length<count.n?offset+rows.results.length:null,
+   users:rows.results.map(u=>({id:u.id,email:u.email,role:u.role,createdAt:u.created_at,taskCount:u.task_count,callCount:u.call_count,lastCallAt:u.last_call_at}))});
+ }
+ const summary=await one(env.DB,`SELECT COUNT(*) AS records,COUNT(DISTINCT user_id) AS active_users,
+  COUNT(DISTINCT task_id) AS tasks,COALESCE(SUM(CASE WHEN source='live' THEN 1 ELSE 0 END),0) AS calls FROM api_activity${where}`,...args);
+ const rows=await env.DB.prepare(`SELECT id,task_id,email,started_at,responded_at,source,mode,model,requested_count,outcome,http_status,task_status,upstream_id FROM api_activity${where} ORDER BY started_at DESC,id DESC LIMIT 50 OFFSET ?`).bind(...args,offset).all();
+ return json({totalUsers:totalUsers.n,total:summary.records,summary:{activeUsers:summary.active_users,tasks:summary.tasks,calls:summary.calls},offset,
+  nextOffset:offset+rows.results.length<summary.records?offset+rows.results.length:null,
+  calls:rows.results.map(a=>({id:a.id,taskId:a.task_id,email:a.email,startedAt:a.started_at,respondedAt:a.responded_at,source:a.source,mode:a.mode,model:a.model,requestedCount:a.requested_count,outcome:a.outcome,httpStatus:a.http_status,taskStatus:a.task_status,upstreamId:a.upstream_id}))});
+}
 function publicInvitation(i){
  return {id:i.id,hint:i.code_hint,label:i.label,createdAt:i.created_at,expiresAt:i.expires_at,createdBy:i.creator_email,usedBy:i.member_email||null,usedAt:i.used_at,revokedAt:i.revoked_at,status:i.used_by?'used':i.revoked_at?'revoked':i.expires_at<=now()?'expired':'available'};
 }
@@ -402,9 +442,21 @@ async function createTask(req,env,user) {
    try{await saveTaskReferences(env,user,task,referenceInputs);await check();await enforceStorage(env,user,task.conversation_id||task.id,0,check);}catch(e){await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?','unknown',storedError(e),now(),task.id);throw e;}
   });
   if(task.upstream_id||['succeeded','failed','expired'].includes(task.status))return json({task:publicTask(task)});
-  let data;
-  try{await visibleTask(env,user,task.id);data=await upstreamJSON(await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward}));}
-  catch(e){const ambiguous=e.status>=500||e.status===429;await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?',ambiguous?'unknown':'failed',storedError(e),now(),task.id);throw e;}
+  await visibleTask(env,user,task.id);
+  const activityId=uid(),startedAt=now();
+  await run(env.DB,"INSERT INTO api_activity(id,task_id,user_id,email,started_at,source,mode,model,requested_count,outcome,task_status,updated_at) VALUES (?,?,?,?,?,'live',?,?,?,'pending',?,?)",activityId,task.id,user.id,user.email,startedAt,p.mode,p.model,p.n,task.status,startedAt);
+  let data,responseStatus=null;
+  try{
+   const response=await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward});
+   responseStatus=response.status;data=await upstreamJSON(response);
+   const id=data.id??data.jitu?.request_id;assert(id!=null&&/^[a-zA-Z0-9_-]{1,150}$/.test(String(id)),'生图服务未返回有效任务编号，请保留原提交并稍后核对。',502);
+   const acceptedStatus=data.data?'succeeded':['queued','running','succeeded','failed','expired'].includes(data.status)?data.status:'queued';
+   await run(env.DB,"UPDATE api_activity SET outcome='accepted',http_status=?,responded_at=?,upstream_id=?,task_status=?,updated_at=? WHERE id=?",responseStatus,now(),String(id),acceptedStatus,now(),activityId);
+  }
+  catch(e){const ambiguous=!responseStatus||e.status>=500||responseStatus===429||(responseStatus>=200&&responseStatus<300);
+   await run(env.DB,'UPDATE api_activity SET outcome=?,http_status=?,responded_at=?,updated_at=? WHERE id=?',ambiguous?'unknown':'rejected',responseStatus,now(),now(),activityId);
+   await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?',ambiguous?'unknown':'failed',storedError(e),now(),task.id);throw e;
+  }
   const upstreamID=data.id??data.jitu?.request_id;assert(upstreamID!=null,'生图服务未返回任务编号，请保留原提交并稍后核对。',502);
   assert(/^[a-zA-Z0-9_-]{1,150}$/.test(String(upstreamID)),'生图服务返回的任务编号无法识别，请联系支持核对。',502);
   const status=data.data?'succeeded':['queued','running','succeeded','failed','expired'].includes(data.status)?data.status:'queued';
@@ -493,6 +545,7 @@ export function createHandler(assets) {
         const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return await sessionResponse(env.DB,account);
       }
       assert(user,'请先登录你的账号。',401);
+      if(path.startsWith('/api/admin/activity/'))return await ownerActivity(req,env,user,path);
       if(path.startsWith('/api/admin/'))return await invitationAdmin(req,env,user,path);
       if(path==='/api/updates/seen'&&req.method==='POST'){const input=await bodyJSON(req);assert(input.version===RELEASES[0].version,'网站已有新版本，请刷新后查看。',409);await run(env.DB,'UPDATE users SET last_seen_release=? WHERE id=?',input.version,user.id);return json({ok:true});}
       if(path==='/api/storage'&&req.method==='GET')return json(await maintainAccountStorage(env,user));
