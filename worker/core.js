@@ -219,6 +219,9 @@ async function invitationAdmin(req,env,user,path){
 // GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
 export const RELEASES = [{
+ version:'2026.10.20.1',date:'2026-10-20',title:'品牌图案更新',
+ changes:['首页中央的小猫替换为新的猫头图片。','侧栏左上角改用完整的 image meow 标志图片，移除原来的图标与文字组合。']
+},{
  version:'2026.10.19.4',date:'2026-10-19',title:'更新日志弹窗样式优化',
  changes:['移除更新日志弹窗右上角「×」周围的绿色方框。']
 },{
