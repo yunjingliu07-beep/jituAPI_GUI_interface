@@ -28,12 +28,28 @@ async function snapshot(){
 test('migration freeze blocks every product route before database access or upstream calls',async()=>{
  const env={MIGRATION_MODE:'frozen',MIGRATION_ID:crypto.randomUUID(),DB:new Proxy({},{get(){throw new Error('Database must not be touched while frozen');}})};
  const handler=createHandler({});
- for(const [method,path] of [['GET','/'],['GET','/api/tasks'],['GET','/api/conversations'],['POST','/api/auth/password/register'],['POST','/api/tasks'],['DELETE','/api/api-profiles/anything']]){
+ for(const [method,path] of [['GET','/'],['GET','/app.js'],['GET','/style.css'],['GET','/cathead.png'],['POST','/site-icon.png'],['GET','/api/tasks'],['GET','/api/conversations'],['POST','/api/auth/password/register'],['POST','/api/tasks'],['DELETE','/api/api-profiles/anything']]){
   const r=await handler.fetch(new Request('https://example.com'+path,{method}),env,{});
   assert.equal(r.status,503);assert.equal(r.headers.get('cache-control'),'no-store');assert.equal(r.headers.get('retry-after'),'120');
  }
  const status=await handler.fetch(new Request('https://example.com/api/migration-status'),env,{});
  assert.deepEqual(await status.json(),{mode:'frozen',migrationId:env.MIGRATION_ID});
+});
+
+test('frozen mirror serves only public branding icons while product routes remain paused',async()=>{
+ const icon=await readFile(new URL('../public/site-icon.png',import.meta.url));
+ const assets={'/site-icon.png':{type:'image/png',content:icon},'/favicon.ico':{type:'image/x-icon',content:await readFile(new URL('../public/favicon.ico',import.meta.url))},'/favicon.svg':{type:'image/svg+xml',content:await readFile(new URL('../public/brand-mark.svg',import.meta.url),'utf8')}};
+ assets['/favicon.png']=assets['/site-icon.png'];
+ const handler=createHandler(assets),env={MIGRATION_MODE:'frozen',DB:new Proxy({},{get(){throw new Error('Icons must not touch the database');}})};
+ for(const [path,asset] of Object.entries(assets)){
+  const response=await handler.fetch(new Request('https://example.com'+path+'?v=paw-20261020'),env,{});
+  assert.equal(response.status,200);assert.equal(response.headers.get('content-type'),asset.type);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()),Buffer.from(asset.content));
+  const head=await handler.fetch(new Request('https://example.com'+path,{method:'HEAD'}),env,{});assert.equal(head.status,200);
+ }
+ const paused=await handler.fetch(new Request('https://example.com/'),env,{});
+ assert.equal(paused.status,503);assert.match(await paused.text(),/rel="icon"[^>]+site-icon\.png\?v=paw-20261020/);
+ const product=await handler.fetch(new Request('https://example.com/api/me'),env,{});assert.equal(product.status,503);
 });
 
 test('migration packages require the recipient private key and reject tampering or missing references',async()=>{

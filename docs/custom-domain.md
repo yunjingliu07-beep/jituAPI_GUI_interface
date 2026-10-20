@@ -30,7 +30,7 @@
 ## 源代码相关位置
 
 - `public/index.html`：canonical、Open Graph URL、站点标题、品牌标志引用。
-- `public/brand-mark.svg`：可编辑的猫咪 SVG 标志。
-- `scripts/build.mjs`：将网页与标志打包进 Worker，同时提供 `/favicon.svg`。
+- `public/site-icon.png`：登录弹窗、助手头像与 favicon 共用的原始爪印图片。`public/brand-mark.svg` 内嵌同图，保留旧地址兼容。
+- `scripts/build.mjs`：将网页与品牌图片打包进 Worker，提供 PNG、ICO 与兼容 SVG 图标入口。
 - `.openai/hosting.json`：站点 ID 和数据库绑定，保留原 ID 与 `DB` 数据库。
 - `docs/site-config.json`：非敏感部署信息快照，供维护者核对。

@@ -219,6 +219,9 @@ async function invitationAdmin(req,env,user,path){
 // GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
 export const RELEASES = [{
+ version:'2026.10.20.3',date:'2026-10-20',title:'统一爪印图标',
+ changes:['网站图标、登录弹窗和助手回复头像统一替换为新的爪印图片。','更新浏览器 favicon，并让迁移暂停页也能显示新图标。']
+},{
  version:'2026.10.20.2',date:'2026-10-20',title:'方框图标统一圆角',
  changes:['侧栏、图片、复制、叠层和比例图标统一使用圆角矩形，下载托盘改为圆角。','切换 API 弹窗的钥匙标识改为圆角 SVG，使不同设备上的外观保持一致。']
 },{
@@ -506,12 +509,13 @@ export function createHandler(assets) {
   return {async fetch(req,env,ctx) {
     const path=new URL(req.url).pathname;
     try {
-      // Freeze every application route before any database access during a final migration snapshot.
+      // Freeze product routes before database access; only public icon files may still load.
       if(path==='/api/migration-status'&&req.method==='GET')return json({mode:env.MIGRATION_MODE==='frozen'?'frozen':'normal',migrationId:env.MIGRATION_ID||null});
-      if(env.MIGRATION_MODE==='frozen'){
+      const publicIconRequest=['GET','HEAD'].includes(req.method)&&['/site-icon.png','/favicon.png','/favicon.svg','/favicon.ico'].includes(path);
+      if(env.MIGRATION_MODE==='frozen'&&!publicIconRequest){
         const headers={'Cache-Control':'no-store','Retry-After':'120'};
         if(path.startsWith('/api/'))return json({error:'网站正在迁移至新服务器，暂时无法登录或提交生图，请稍后刷新。'},503,headers);
-        return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>image meow · 网站迁移中</title><body><main><h1>网站迁移中</h1><p>正在将服务迁移至新服务器，暂时无法登录或提交生图，请稍后刷新。</p><p>已有账号和历史记录会一并迁移。</p></main></body></html>',{status:503,headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
+        return new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>image meow · 网站迁移中</title><link rel="icon" type="image/png" sizes="150x151" href="/site-icon.png?v=paw-20261020"><link rel="shortcut icon" type="image/x-icon" href="/favicon.ico?v=paw-20261020"><link rel="apple-touch-icon" href="/site-icon.png?v=paw-20261020"><body><main><h1>网站迁移中</h1><p>正在将服务迁移至新服务器，暂时无法登录或提交生图，请稍后刷新。</p><p>已有账号和历史记录会一并迁移。</p></main></body></html>',{status:503,headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
       }
       if(!path.startsWith('/api/')){const asset=assets[path==='/'?'/index.html':path];if(!asset)return new Response('页面不存在',{status:404});return new Response(asset.content,{headers:{'Content-Type':asset.type,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self' https://chatgpt.com https://*.chatgpt.com"}});}
       assert(env.DB,'网站数据库尚未就绪，请联系站长完成部署。',503);

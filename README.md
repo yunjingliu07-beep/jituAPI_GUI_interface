@@ -80,8 +80,10 @@ Node.js 24 或更新版本，无 npm 依赖。运行地址 http://localhost:5173
 
 当前品牌为 **image meow**，主站域名为 **https://imagemeow.top/**。原 Sites 平台地址保留兼容访问，绑定域名不会改变站点的访问范围。
 
-- `public/brand-mark.svg`：浅绿线条小猫品牌标志，与对话初始页确认的 Logo 一致；侧栏、对话头像、登录弹窗和浏览器图标共用此文件。
-- `/favicon.svg`：与主标志一致的浏览器标签页图标，由构建与本地开发服务器映射到同一源文件。
+- `public/site-icon.png`：用户提供的原始爪印图片，供登录弹窗、助手回复头像与浏览器图标共用。
+- `public/cathead+logo.png`：侧栏完整品牌标志；`public/cathead.png`：新会话首页猫头。
+- `public/favicon.ico`：无损封装原始爪印 PNG 的 ICO；`/favicon.png` 与 `/favicon.svg` 保留兼容入口。`brand-mark.svg` 内嵌同一张爪印图片。
+- 正常页面与迁移暂停页均声明新 favicon；暂停时只开放这些公共图标的读取，不开放业务页面或 API。
 - 页面 title、描述、canonical 与 Open Graph 元信息使用新品牌及主域名。
 - [域名绑定、DNS 记录和恢复说明](docs/custom-domain.md)。
 - [站点与域名配置快照](docs/site-config.json)。

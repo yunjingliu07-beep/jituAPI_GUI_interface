@@ -15,10 +15,10 @@ export async function createServer({origin,dataDir,vaultKey,resendApiKey,emailFr
  if(!/^[a-f0-9]{64}$/.test(vaultKey||''))throw new Error('API_VAULT_KEY must contain 64 lowercase hexadecimal characters.');
  if(!dataDir)throw new Error('DATA_DIR is required.');
  const assets={};
- for(const [name,type] of [['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['app.js','application/javascript; charset=utf-8'],['parameters.js','application/javascript; charset=utf-8'],['activity.js','application/javascript; charset=utf-8'],['brand-mark.svg','image/svg+xml'],['cathead.png','image/png'],['cathead+logo.png','image/png']]){
-  assets['/'+name]={type,content:await readFile(new URL('../public/'+name,import.meta.url),type==='image/png'?undefined:'utf8')};
+ for(const [name,type] of [['index.html','text/html; charset=utf-8'],['style.css','text/css; charset=utf-8'],['app.js','application/javascript; charset=utf-8'],['parameters.js','application/javascript; charset=utf-8'],['activity.js','application/javascript; charset=utf-8'],['brand-mark.svg','image/svg+xml'],['cathead.png','image/png'],['cathead+logo.png','image/png'],['site-icon.png','image/png'],['favicon.ico','image/x-icon']]){
+  assets['/'+name]={type,content:await readFile(new URL('../public/'+name,import.meta.url),['image/png','image/x-icon'].includes(type)?undefined:'utf8')};
  }
- assets['/favicon.svg']=assets['/brand-mark.svg'];
+ assets['/favicon.svg']=assets['/brand-mark.svg'];assets['/favicon.png']=assets['/site-icon.png'];
  const DB=openDatabase(dataDir),env={DB,API_VAULT_KEY:vaultKey,RESEND_API_KEY:resendApiKey,EMAIL_FROM:emailFrom,BUCKET:localBucket(resolve(dataDir,'references'))};
  const maintenance=await maintainExistingStorage(env);
  if(maintenance.failures)console.warn('Some account storage cleanup remains pending; it will retry on account access.');

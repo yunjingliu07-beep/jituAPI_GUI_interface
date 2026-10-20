@@ -4,8 +4,8 @@
   "site_project_id": "appgprj_6ad3602eac1c8191beccd3a66e796b09",
   "custom_domain_id": "appgdom_6ad473a9784c8191a0b264071c58b9cc",
   "platform_url": "https://jitu-image-workshop.foamydeer513.chatgpt.site",
-  "logo_source": "public/brand-mark.svg",
-  "favicon_url": "/favicon.svg",
+  "logo_source": "public/site-icon.png",
+  "favicon_url": "/site-icon.png?v=paw-20261020",
   "hosting": "Ubuntu production; Sites paused source mirror",
   "database_binding": "DB",
   "custom_domain_status_at_check": "active",
@@ -15,5 +15,7 @@
   "note": "Informational snapshot only. Production currently runs on Ubuntu. A retained Sites domain binding does not establish current DNS routing; Sites runtime pause and secrets are preserved independently.",
   "file_storage_binding": "BUCKET",
   "sites_role": "paused_source_mirror",
-  "source_sync_reference": "docs/source-sync.md"
+  "source_sync_reference": "docs/source-sync.md",
+  "sidebar_logo_source": "public/cathead+logo.png",
+  "welcome_image_source": "public/cathead.png"
 }

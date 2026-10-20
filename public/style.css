@@ -34,3 +34,5 @@
 .brand-wordmark{display:block;flex:1;min-width:0;width:180px;max-width:calc(100% - 44px);height:auto;object-fit:contain}.brand>.icon-button{flex-shrink:0}.empty-mark:has(.welcome-cat){width:100px;height:auto}.welcome-cat{display:block;width:100%;height:auto}
 
 .dialog-brand[data-icon=keybox] .icon{width:28px;height:28px}
+
+.dialog-brand img,.assistant-icon .brand-logo{object-fit:contain}
