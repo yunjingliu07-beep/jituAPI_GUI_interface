@@ -219,6 +219,9 @@ async function invitationAdmin(req,env,user,path){
 // GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
 export const RELEASES = [{
+ version:'2026.10.20.2',date:'2026-10-20',title:'方框图标统一圆角',
+ changes:['侧栏、图片、复制、叠层和比例图标统一使用圆角矩形，下载托盘改为圆角。','切换 API 弹窗的钥匙标识改为圆角 SVG，使不同设备上的外观保持一致。']
+},{
  version:'2026.10.20.1',date:'2026-10-20',title:'品牌图案更新',
  changes:['首页中央的小猫替换为新的猫头图片。','侧栏左上角改用完整的 image meow 标志图片，移除原来的图标与文字组合。']
 },{
