@@ -219,6 +219,9 @@ async function invitationAdmin(req,env,user,path){
 // GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
 export const RELEASES = [{
+ version:'2026.10.21.1',date:'2026-10-21',title:'同一会话，连续创作',
+ changes:['生图完成后，可直接在当前会话输入新需求并发送，继续下一轮创作；对话和图片按轮保留。','完成结果新增「继续创作」入口，点击即可回到输入框。生成期间可以先写下一轮需求，完成后继续发送。']
+},{
  version:'2026.10.20.3',date:'2026-10-20',title:'统一爪印图标',
  changes:['网站图标、登录弹窗和助手回复头像统一替换为新的爪印图片。','更新浏览器 favicon，并让迁移暂停页也能显示新图标。']
 },{
