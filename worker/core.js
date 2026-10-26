@@ -486,7 +486,7 @@ async function createTask(req,env,user) {
    responseStatus=response.status;data=await upstreamJSON(response);
    const id=data.id??data.jitu?.request_id;assert(id!=null&&/^[a-zA-Z0-9_-]{1,150}$/.test(String(id)),'生图服务未返回有效任务编号，请保留原提交并稍后核对。',502);
    const acceptedStatus=data.data?'succeeded':['queued','running','succeeded','failed','expired'].includes(data.status)?data.status:'queued';
-   await run(env.DB,"UPDATE api_activity SET outcome='accepted',http_status=?,responded_at=?,upstream_id=?,task_status=?,updated_at=? WHERE id=?",responseStatus,now(),String(id),acceptedStatus,now(),activityId);
+   await run(env.DB,"UPDATE api_activity SET outcome='accepted',http_status=?,responded_at=?,upstream_id=?,task_status=COALESCE((SELECT status FROM tasks WHERE id=api_activity.task_id),?),updated_at=? WHERE id=?",responseStatus,now(),String(id),acceptedStatus,now(),activityId);
   }
   catch(e){await expireTimedOutTasks(env,user.id);const latest=await visibleTask(env,user,task.id);if(latest.status==='timed_out')return json({task:publicTask(latest)});const ambiguous=!responseStatus||e.status>=500||responseStatus===429||(responseStatus>=200&&responseStatus<300);
    await run(env.DB,'UPDATE api_activity SET outcome=?,http_status=?,responded_at=?,updated_at=? WHERE id=?',ambiguous?'unknown':'rejected',responseStatus,now(),now(),activityId);

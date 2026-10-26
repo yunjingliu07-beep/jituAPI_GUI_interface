@@ -68,6 +68,7 @@ test('a delayed original submission ends at the same deadline without restoring 
   t.mock.timers.setTime(Date.now()+1200000);await expireTimedOutTasks(a.env);release();
   const data=await (await submission).json();assert.equal(data.task.status,'timed_out');
   assert.equal(a.db.raw.prepare('SELECT status FROM tasks').get().status,'timed_out');
+  assert.equal(a.db.raw.prepare('SELECT task_status FROM api_activity').get().task_status,'timed_out');
  }finally{globalThis.fetch=native;a.db.raw.close();}
 });
 test('migration grants the requested account 5 GB before startup cleanup and preserves other accounts and notices',async()=>{
