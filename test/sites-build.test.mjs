@@ -35,6 +35,13 @@ test('Sites package keeps the same business schema without replaying the server 
   assert.doesNotMatch(hosted,/INSERT INTO api_activity/);
   assert.equal(hosted,await readFile(join(root,'drizzle/sites/0006_owner_activity.sql'),'utf8'));
   server.exec(original);site.exec(hosted);
+  for(const entry of journal.entries.filter(e=>e.idx>6)){
+   const original=await readFile(join(root,'drizzle',entry.tag+'.sql'),'utf8');
+   assert.equal(await readFile(join(dir,'dist/drizzle',entry.tag+'.sql'),'utf8'),original);
+   server.exec(original);site.exec(original);
+  }
+  const businessSchema=db=>db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE name IN ('tasks','account_storage','tasks_result_sync') ORDER BY type,name").all();
+  assert.deepEqual(businessSchema(site),businessSchema(server));
   const schema=db=>db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE name LIKE 'api_activity%' ORDER BY type,name").all();
   assert.deepEqual(schema(site),schema(server));
   assert.equal(server.prepare('SELECT COUNT(*) AS n FROM api_activity').get().n,1);
@@ -51,6 +58,7 @@ test('Sites package keeps the same business schema without replaying the server 
   await exec(process.execPath,[join(root,'scripts/package-sites.mjs'),archive],{cwd:dir});
   const {stdout:list}=await exec('tar',['-tzf',archive]);
   assert(list.includes('./drizzle/0006_owner_activity.sql'));
+  assert(list.includes('./drizzle/0008_generated_results.sql'));
   assert(list.includes('./dist/server/index.js'));assert(list.includes('./.openai/hosting.json'));
   assert(!list.includes('dist/drizzle/'));assert(!list.includes('worker/core.js'));
   const {stdout:packed}=await exec('tar',['-xOzf',archive,'./drizzle/0006_owner_activity.sql']);

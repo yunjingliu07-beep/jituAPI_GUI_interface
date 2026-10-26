@@ -11,7 +11,8 @@ const migrations=[
  ['0004_updates_storage','users','last_seen_release'],
  ['0005_invitations','users','role'],
  ['0006_owner_activity','api_activity','task_id'],
- ['0007_account_storage_limit','account_storage','limit_bytes']
+ ['0007_account_storage_limit','account_storage','limit_bytes'],
+ ['0008_generated_results','tasks','result_files']
 ];
 export function databaseFile(directory){return resolve(directory,'studio.sqlite');}
 export function migrate(directory){
@@ -33,7 +34,7 @@ export function openDatabase(directory){
  raw.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
  // Fail closed when someone starts the service before applying its schema.
  raw.prepare('SELECT password_hash,onboarding_completed_at,selected_api_id,last_seen_release,role,invitation_id FROM users LIMIT 0').all();
- raw.prepare('SELECT reference_files,references_ready,api_profile_id,api_key_hash FROM tasks LIMIT 0').all();
+ raw.prepare('SELECT reference_files,references_ready,api_profile_id,api_key_hash,result_files,result_count,results_ready,result_error FROM tasks LIMIT 0').all();
  raw.prepare('SELECT pinned,deleted_at FROM conversations LIMIT 0').all();
  raw.prepare('SELECT notice_revision,limit_bytes FROM account_storage LIMIT 0').all();
  raw.prepare('SELECT code_hash,used_by FROM registration_invitations LIMIT 0').all();

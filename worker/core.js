@@ -108,6 +108,8 @@ async function cleanDeletedConversation(env,user,id,check=async()=>{}){
    if(!rows.results.length)break;
    const keys=rows.results.flatMap(t=>taskReferences(t).map(r=>{assert(r.key.startsWith(`references/${user.id}/${t.id}/`),'图片归属信息不正确。',503);return r.key;}));
    if(keys.length){if(!env.BUCKET)return false;for(let i=0;i<keys.length;i+=100)await env.BUCKET.delete(keys.slice(i,i+100));}
+   const generatedKeys=rows.results.flatMap(t=>taskResults(t).map(f=>{assert(f.key.startsWith(`generated/${user.id}/${t.id}/`),'图片归属信息不正确。',503);return f.key;}));
+   if(generatedKeys.length){const bucket=resultsBucket(env);if(!bucket)return false;for(let i=0;i<generatedKeys.length;i+=100)await bucket.delete(generatedKeys.slice(i,i+100));}
    await check();
    await run(env.DB,`DELETE FROM tasks WHERE user_id=? AND id IN (${rows.results.map(()=>'?').join(',')})`,user.id,...rows.results.map(t=>t.id));
   }
@@ -216,7 +218,7 @@ async function invitationAdmin(req,env,user,path){
  throw new AppError('没有找到这个管理功能。',404);
 }
 
-// GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
+// GB uses decimal bytes; original inputs and archived outputs count toward each account.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
 export const GENERATION_TIMEOUT_SECONDS = 20 * 60;
 const ACTIVE_TASK_STATUSES = ['submitting','unknown','queued','running'];
@@ -230,6 +232,9 @@ async function accountStorageLimit(env,user) {
  return state?.limit_bytes||USER_STORAGE_LIMIT;
 }
 export const RELEASES = [{
+ version:'2026.10.26.2',date:'2026-10-26',title:'生成图片保存到个人空间',
+ changes:['生图成功后自动将结果图片保存到服务器的个人空间，已保存的图片可跨设备查看和下载，不再受即图 12 小时有效期限制。','生成图片与聊天、参考图、遮罩共用账户容量；空间不足按会话创建时间清理最早会话，删除会话也会删除其中的图片。','显示图片保存状态，保存失败可重试；服务器使用账户已保存的原 API 在后台继续检查任务和保存结果，关闭网页后也能处理。']
+},{
  version:'2026.10.26.1',date:'2026-10-26',title:'生图超时自动结束',
  changes:['生图提交后超过 20 分钟仍未返回结果，将显示「生图超时」并停止查询，排队和生成中的任务同样适用。','超时任务会作为已结束的创作保留，可重新生图，也可直接在当前会话继续创作；已有超时任务会自动检查并结束。']
 },{
@@ -258,7 +263,7 @@ export const RELEASES = [{
  changes:['新增更新日志：每次版本更新后首次访问会显示更新内容，也可随时从侧栏查看。','每个账号提供 1 GB 聊天与上传素材空间，可在「我的账号」查看用量。','空间不足时自动清理最早的聊天及其参考图、遮罩，并保留清理通知；正在生成的会话暂不清理。','请及时下载生成结果；生图供应商的结果图片仍按原规则保留约 12 小时。']
 }];
 const storageText = field => `length(CAST(COALESCE(${field},'') AS BLOB))`;
-const TASK_STORAGE_SQL = `4096+${['prompt','model','size','ui_settings','reference_files'].map(storageText).join('+')}+COALESCE((SELECT SUM(MAX(0,CAST(json_extract(value,'$.size') AS INTEGER))) FROM json_each(CASE WHEN json_valid(reference_files) THEN reference_files ELSE '[]' END)),0)`;
+const TASK_STORAGE_SQL = `4096+${['prompt','model','size','ui_settings','reference_files','result_files'].map(storageText).join('+')}+COALESCE((SELECT SUM(MAX(0,CAST(json_extract(value,'$.size') AS INTEGER))) FROM json_each(CASE WHEN json_valid(reference_files) THEN reference_files ELSE '[]' END)),0)+COALESCE((SELECT SUM(MAX(0,CAST(json_extract(value,'$.size') AS INTEGER))) FROM json_each(CASE WHEN json_valid(result_files) THEN result_files ELSE '[]' END)),0)`;
 const CONVERSATION_STORAGE_SQL = `512+${storageText('title')}+${storageText('settings')}`;
 export async function storageUsage(env,userId,conversationId=null) {
  const filter=conversationId?' AND (conversation_id=? OR (conversation_id IS NULL AND id=?))':'';
@@ -499,15 +504,19 @@ async function createTask(req,env,user) {
   const status=data.data?'succeeded':['queued','running','succeeded','failed','expired'].includes(data.status)?data.status:'queued';
   const error=status==='failed'?JSON.stringify(explainUpstreamError(data)):null;
   await run(env.DB,`UPDATE tasks SET upstream_id=?,status=?,error=?,updated_at=? WHERE id=? AND status<>'timed_out'`,String(upstreamID),status,error,now(),task.id);
-  const saved=await visibleTask(env,user,task.id);
-  return json({task:publicTask(saved),result:saved.status==='succeeded'&&data.data?data:undefined},202);
+  let saved=await visibleTask(env,user,task.id);
+  if(saved.status==='succeeded'&&data.data)saved=await archiveTaskResult(env,user,saved,data);
+  return json({task:publicTask(saved),result:saved.status==='succeeded'&&data.data?(saved.results_ready?savedResult(saved):data):undefined},202);
 }
-export function publicTask(t) {if(ACTIVE_TASK_STATUSES.includes(t.status)&&t.created_at+GENERATION_TIMEOUT_SECONDS<=now())t={...t,status:'timed_out',error:GENERATION_TIMEOUT_MESSAGE};const errorInfo=readTaskError(t.error);let uiSettings=null;try{uiSettings=JSON.parse(t.ui_settings);}catch{}return {id:t.id,conversationId:t.conversation_id||t.id,uiSettings,apiProfileId:t.api_profile_id||null,references:(t.references_ready===0?[]:taskReferences(t)).map(({index,kind,name,type,size})=>({index,kind,name,type,size})),upstreamId:t.upstream_id,idempotencyKey:t.idempotency_key,mode:t.mode,prompt:t.prompt,model:t.model,size:t.size,n:t.count,status:t.created_at+43200<now()&&t.status==='succeeded'?'expired':t.status,error:errorInfo?.reason||null,errorInfo,createdAt:t.created_at,updatedAt:t.updated_at,charged:t.charged,balance:t.balance};}
+export function publicTask(t) {if(ACTIVE_TASK_STATUSES.includes(t.status)&&t.created_at+GENERATION_TIMEOUT_SECONDS<=now())t={...t,status:'timed_out',error:GENERATION_TIMEOUT_MESSAGE};const errorInfo=readTaskError(t.error);let uiSettings=null;try{uiSettings=JSON.parse(t.ui_settings);}catch{}return {id:t.id,conversationId:t.conversation_id||t.id,uiSettings,apiProfileId:t.api_profile_id||null,references:(t.references_ready===0?[]:taskReferences(t)).map(({index,kind,name,type,size})=>({index,kind,name,type,size})),upstreamId:t.upstream_id,idempotencyKey:t.idempotency_key,mode:t.mode,prompt:t.prompt,model:t.model,size:t.size,n:t.count,savedImages:taskResults(t).filter(f=>f.ready).map(({index,type,size})=>({index,type,size})),resultCount:t.result_count||t.count,resultsSaved:!!t.results_ready,saveError:t.result_error||null,status:t.created_at+43200<now()&&t.status==='succeeded'&&!taskResults(t).some(f=>f.ready)?'expired':t.status,error:errorInfo?.reason||null,errorInfo,createdAt:t.created_at,updatedAt:t.updated_at,charged:t.charged,balance:t.balance};}
 async function taskResult(env,user,id,req) {
   await expireTimedOutTasks(env,user.id);
   const task=await visibleTask(env,user,id);
+  if(task.results_ready)return {task:publicTask(task),result:savedResult(task)};
+  const partial=taskResults(task).some(f=>f.ready);
+  if(partial&&!req.headers.get('x-api-profile')&&!req.headers.get('x-jitu-key'))return {task:publicTask(task),result:savedResult(task)};
   if(task.status==='timed_out'||!task.upstream_id)return {task:publicTask(task)};
-  if(task.created_at+43200<now()){await run(env.DB,'UPDATE tasks SET status=?,updated_at=? WHERE id=?','expired',now(),task.id);return {task:publicTask({...task,status:'expired'})};}
+  if(task.created_at+43200<now()){if(partial)return {task:publicTask(task),result:savedResult(task)};await run(env.DB,'UPDATE tasks SET status=?,updated_at=? WHERE id=?','expired',now(),task.id);return {task:publicTask({...task,status:'expired'})};}
   const key=await taskKey(req,env,user,task);
   const remaining=(task.created_at+GENERATION_TIMEOUT_SECONDS)*1000-Date.now();
   let data;
@@ -518,23 +527,96 @@ async function taskResult(env,user,id,req) {
   if((await visibleTask(env,user,id)).status==='timed_out')return {task:publicTask(await visibleTask(env,user,id))};
   assert(['queued','running','succeeded','failed','expired'].includes(data.status),'暂时无法识别生成状态，请稍后再查询。',502);
   const error=data.status==='failed'?JSON.stringify(explainUpstreamError(data)):null;
-  await run(env.DB,`UPDATE tasks SET status=?,error=?,updated_at=?,charged=COALESCE(?,charged),balance=COALESCE(?,balance) WHERE id=? AND status<>'timed_out'`,data.status,error,now(),data.result?.jitu?.charged??null,data.result?.jitu?.balance??null,task.id);
-  const saved=await visibleTask(env,user,id);
-  return {task:publicTask(saved),result:saved.status==='succeeded'?data.result:undefined};
+  await run(env.DB,`UPDATE tasks SET status=?,error=?,updated_at=?,charged=COALESCE(?,charged),balance=COALESCE(?,balance) WHERE id=? AND status<>'timed_out' AND results_ready=0 AND (status<>'succeeded' OR ?='succeeded')`,data.status,error,now(),data.result?.jitu?.charged??null,data.result?.jitu?.balance??null,task.id,data.status);
+  let saved=await visibleTask(env,user,id);
+  if(saved.status==='succeeded'&&!saved.results_ready&&data.status==='succeeded')saved=await archiveTaskResult(env,user,saved,data.result);
+  return {task:publicTask(saved),result:saved.status==='succeeded'?(saved.results_ready?savedResult(saved):data.result||savedResult(saved)):undefined};
 }
 export function safeImageURL(raw) {
   let u;try{u=new URL(raw);}catch{throw new AppError('图片下载地址无法读取。',502);}
   const host=u.hostname.replace(/^\[|\]$/g,'').toLowerCase();assert(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.port,'图片下载地址不安全，已停止下载。',502);
   assert(host.includes('.')&&!host.includes(':')&&!/^\d+(\.\d+){3}$/.test(host)&&!/(^|\.)(localhost|local|internal|test|invalid|onion)$/.test(host)&&!host.endsWith('.local')&&!host.endsWith('.internal'),'图片下载地址不安全，已停止下载。',502);return u;
 }
-async function downloadImage(env,user,id,index,req) {
-  assert(Number.isInteger(index)&&index>=0&&index<16,'图片序号无效。');const result=await taskResult(env,user,id,req);assert(result.task.status==='succeeded','图片还没有生成完成。',409);
-  const item=result.result?.data?.[index];assert(item,'这张图片不存在。',404);
+async function resultImageBytes(item) {
   let bytes,type;
   if(item.b64_json){assert(typeof item.b64_json==='string' && item.b64_json.length<=90*1024*1024,'图片过大，暂时无法下载。',413);try{const str=atob(item.b64_json);bytes=Uint8Array.from(str,c=>c.charCodeAt(0));}catch{throw new AppError('返回的图片内容无法读取。',502);}type=imageInfo(bytes).type;}
   else if(item.url){let next=safeImageURL(item.url),response;for(let n=0;n<4;n++){response=await fetch(next.toString(),{redirect:'manual',signal:AbortSignal.timeout(90000)});if(response.status>=300&&response.status<400){assert(response.headers.get('location'),'图片下载地址已失效。',502);next=safeImageURL(new URL(response.headers.get('location'),next).toString());continue;}break;}assert(response.ok,'图片地址暂时无法访问，请稍后重试下载。',502);type=(response.headers.get('content-type')||'').split(';')[0];assert(TYPES.has(type),'返回的文件不是可下载的图片。',502);assert(Number(response.headers.get('content-length')||0)<=64*1024*1024,'图片过大，暂时无法下载。',413);const reader=response.body.getReader();let size=0;const chunks=[];for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>64*1024*1024){await reader.cancel();throw new AppError('图片过大，暂时无法下载。',413);}chunks.push(value);}bytes=new Uint8Array(size);let at=0;for(const chunk of chunks){bytes.set(chunk,at);at+=chunk.length;}type=imageInfo(bytes).type;}
   else throw new AppError('这次结果没有可下载的图片。',502);
-  const ext=type==='image/jpeg'?'jpg':type.split('/')[1];return new Response(bytes,{headers:{'Content-Type':type,'Content-Disposition':`attachment; filename="image-meow-${id}-${index+1}.${ext}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+  assert(bytes.byteLength<=64*1024*1024,'图片过大，暂时无法保存。',413);
+  return {bytes,type};
+}
+function resultsBucket(env){return env.RESULTS_BUCKET||env.BUCKET;}
+function taskResults(task){try{const files=JSON.parse(task.result_files);return Array.isArray(files)?files:[];}catch{return [];}}
+function savedResult(task){return {data:Array.from({length:task.result_count||task.count},(_,index)=>({saved:taskResults(task).some(f=>f.ready&&f.index===index)}))};}
+async function archiveTaskResult(env,user,task,result) {
+ try{
+  assert(Array.isArray(result?.data)&&result.data.length>0&&result.data.length<=16,'生图已完成，但服务未提供可保存的图片，请稍后重试保存。',502);
+  assert(resultsBucket(env),'生成图片存储暂时不可用，请稍后重试保存。',503);
+  await run(env.DB,'UPDATE tasks SET result_count=? WHERE id=? AND user_id=? AND results_ready=0',result.data.length,task.id,user.id);
+  for(let index=0;index<result.data.length;index++){
+   assert(!env.RESULTS_STOPPED,'服务正在重启，图片将在启动后继续保存。',503);
+   task=await visibleTask(env,user,task.id);
+   if(taskResults(task).some(f=>f.index===index&&f.ready))continue;
+   const {bytes,type}=await resultImageBytes(result.data[index]);
+   assert(!env.RESULTS_STOPPED,'服务正在重启，图片将在启动后继续保存。',503);
+   await withStorageLock(env,user,async check=>{
+    task=await visibleTask(env,user,task.id);
+    const files=taskResults(task),previous=files.find(f=>f.index===index);
+    if(previous?.ready)return;
+    // Record a deterministic destination and the full reservation before writing.
+    // A failed put remains accounted for and can be retried or deleted safely.
+    const planned={index,key:`generated/${user.id}/${task.id}/${index}`,type,size:Math.max(previous?.size||0,bytes.byteLength),ready:false};
+    const next=files.filter(f=>f.index!==index).concat(planned).sort((a,b)=>a.index-b.index),manifest=JSON.stringify(next);
+    const reserve=planned.size-(previous?.size||0)+Math.max(0,textBytes(manifest)-textBytes(task.result_files));
+    await enforceStorage(env,user,task.conversation_id||task.id,reserve,check);await check();
+    await run(env.DB,'UPDATE tasks SET result_files=?,result_count=?,results_ready=0,result_error=NULL WHERE id=? AND user_id=?',manifest,result.data.length,task.id,user.id);
+    await resultsBucket(env).put(planned.key,bytes,{httpMetadata:{contentType:type}});await check();
+    planned.ready=true;planned.size=bytes.byteLength;
+    const complete=next.length===result.data.length&&next.every(f=>f.ready);
+    await run(env.DB,'UPDATE tasks SET result_files=?,results_ready=?,result_error=NULL WHERE id=? AND user_id=?',JSON.stringify(next),complete?1:0,task.id,user.id);
+   });
+  }
+ }catch(e){
+  if(e instanceof AppError&&e.status===404)throw e;
+  const message=e instanceof AppError?e.message:'图片保存暂未完成，请重试保存；在保存成功前请及时下载。';
+  await run(env.DB,'UPDATE tasks SET result_error=? WHERE id=? AND user_id=? AND results_ready=0',message,task.id,user.id);
+ }
+ return visibleTask(env,user,task.id);
+}
+async function storedImage(env,user,task,index) {
+ const file=taskResults(task).find(f=>f.index===index&&f.ready);if(!file)return null;
+ assert(file.key.startsWith(`generated/${user.id}/${task.id}/`),'图片归属信息不正确。',503);
+ const bucket=resultsBucket(env);assert(bucket,'图片存储暂时不可用，请稍后重试。',503);
+ const object=await bucket.get(file.key);assert(object,'已保存的图片文件暂时无法读取，请联系站长检查存储。',503);
+ return imageResponse(object.body,file.type,task.id,index);
+}
+function imageResponse(bytes,type,id,index){
+ const ext=type==='image/jpeg'?'jpg':type.split('/')[1];
+ return new Response(bytes,{headers:{'Content-Type':type,'Content-Disposition':`attachment; filename="image-meow-${id}-${index+1}.${ext}"`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});
+}
+async function downloadImage(env,user,id,index,req) {
+ assert(Number.isInteger(index)&&index>=0&&index<16,'图片序号无效。');
+ let task=await visibleTask(env,user,id),stored=await storedImage(env,user,task,index);if(stored)return stored;
+ const result=await taskResult(env,user,id,req);assert(result.task.status==='succeeded','图片还没有生成完成或未保存的结果已过期。',409);
+ task=await visibleTask(env,user,id);stored=await storedImage(env,user,task,index);if(stored)return stored;
+ const item=result.result?.data?.[index];assert(item&&(item.b64_json||item.url),'这张图片尚未保存，供应商结果也可能已过期。',404);
+ const {bytes,type}=await resultImageBytes(item);return imageResponse(bytes,type,id,index);
+}
+// Only queries existing tasks; never submits a new paid generation.
+export async function syncPendingResults(env,limit=10) {
+ await expireTimedOutTasks(env);
+ const rows=await env.DB.prepare(`SELECT t.id,t.user_id,u.email,
+  (SELECT p.id FROM api_profiles p WHERE p.user_id=t.user_id AND (p.id=t.api_profile_id OR p.key_hash=t.api_key_hash) ORDER BY p.created_at LIMIT 1) AS profile_id
+  FROM tasks t JOIN users u ON u.id=t.user_id LEFT JOIN conversations c ON c.id=COALESCE(t.conversation_id,t.id)
+  WHERE t.status IN ('queued','running','succeeded') AND t.results_ready=0 AND t.created_at>? AND t.updated_at<=? AND c.deleted_at IS NULL
+  AND EXISTS(SELECT 1 FROM api_profiles p WHERE p.user_id=t.user_id AND (p.id=t.api_profile_id OR p.key_hash=t.api_key_hash))
+  ORDER BY t.updated_at,t.id LIMIT ?`).bind(now()-43200,now()-5,limit).all();
+ for(const row of rows.results){
+  if(env.RESULTS_STOPPED)break;
+  try{await taskResult(env,{id:row.user_id,email:row.email},row.id,new Request('https://internal.invalid/api/tasks/'+row.id,{headers:{'x-api-profile':row.profile_id}}));}catch{}
+  await run(env.DB,'UPDATE tasks SET updated_at=? WHERE id=?',now(),row.id);
+ }
+ return {checked:rows.results.length};
 }
 export function createHandler(assets) {
   return {async fetch(req,env,ctx) {

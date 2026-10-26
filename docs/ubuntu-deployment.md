@@ -60,6 +60,7 @@ systemctl list-timers certbot.timer
 | `/etc/image-meow/server.env` | 公网来源、端口、数据目录及 API 加密主密钥，权限 0600 |
 | `/var/lib/image-meow/studio.sqlite` | 账号、会话、任务及加密 API 记录 |
 | `/var/lib/image-meow/references` | 账号私有原参考图、遮罩 |
+| `/var/lib/image-meow/generated` | 账号私有生成结果图片，计入个人空间配额 |
 | `/etc/nginx/sites-available/image-meow.conf` | 网站域名和 TLS 反向代理配置 |
 
 `API_VAULT_KEY` 是本站加密密钥，不是即图 API Key。不要发到聊天、截图或 GitHub；不要随意更换。备份时必须同时保留它，单独恢复数据库无法解密已保存的 API。

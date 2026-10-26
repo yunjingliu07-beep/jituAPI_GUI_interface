@@ -109,6 +109,18 @@ test('self-host persists encrypted API profiles, conversations and private refer
   await app.request(`/api/tasks/${task.id}`,{headers:header});
   r=await app.request(`/api/tasks/${task.id}`,{headers:header});assert.equal((await r.json()).task.status,'succeeded');
   r=await app.request(`/api/tasks/${task.id}/images/0`,{headers:header});assert.deepEqual(Buffer.from(await r.arrayBuffer()),PNG);
+  const generatedDB=new DatabaseSync(databaseFile(dir));
+  const generated=generatedDB.prepare('SELECT result_files,results_ready FROM tasks WHERE id=?').get(task.id);
+  assert.equal(generated.results_ready,1);const files=JSON.parse(generated.result_files);
+  assert(files[0].key.startsWith('generated/'));assert.deepEqual(await readFile(join(dir,files[0].key)),PNG);
+  generatedDB.prepare('UPDATE tasks SET created_at=1 WHERE id=?').run(task.id);generatedDB.close();
+  assert.equal((await app.request('/api/api-profiles/'+profile.id,{method:'DELETE'})).status,200);
+  await app.close();migrate(dir);app=await launch(dir,mock);
+  assert.equal((await app.request('/api/auth/password/login',{body:account})).status,200);
+  const callsBeforeLocalRead=mock.calls.length;
+  r=await app.request(`/api/tasks/${task.id}/images/0`);assert.equal(r.status,200);assert.deepEqual(Buffer.from(await r.arrayBuffer()),PNG);
+  assert.equal((await (await app.request('/api/tasks/'+task.id)).json()).task.status,'succeeded');
+  assert.equal(mock.calls.length,callsBeforeLocalRead);
   const other={email:'other@example.com',password:'other-password-123',confirmPassword:'other-password-123'};
   await app.request('/api/auth/password/register',{body:other});
   assert.equal((await app.request(`/api/tasks/${task.id}/references/0`)).status,404);
