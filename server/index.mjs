@@ -5,7 +5,7 @@ import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {createHandler,maintainExistingStorage} from '../worker/core.js';
+import {createHandler,maintainExistingStorage,expireTimedOutTasks} from '../worker/core.js';
 import {localBucket} from '../scripts/r2-local.mjs';
 import {openDatabase} from './database.mjs';
 
@@ -22,6 +22,8 @@ export async function createServer({origin,dataDir,vaultKey,resendApiKey,emailFr
  const DB=openDatabase(dataDir),env={DB,API_VAULT_KEY:vaultKey,RESEND_API_KEY:resendApiKey,EMAIL_FROM:emailFrom,BUCKET:localBucket(resolve(dataDir,'references'))};
  const maintenance=await maintainExistingStorage(env);
  if(maintenance.failures)console.warn('Some account storage cleanup remains pending; it will retry on account access.');
+ const timeoutSweep=setInterval(()=>{expireTimedOutTasks(env).catch(()=>console.warn('Task timeout cleanup will retry.'));},1000);
+ timeoutSweep.unref();
  const app=createHandler(assets);
  const server=http.createServer({maxHeaderSize:16384},async(req,res)=>{
   try{
@@ -59,7 +61,7 @@ export async function createServer({origin,dataDir,vaultKey,resendApiKey,emailFr
  server.headersTimeout=60000;
  server.keepAliveTimeout=5000;
  server.maxRequestsPerSocket=1000;
- server.on('close',()=>DB.raw.close());
+ server.on('close',()=>{clearInterval(timeoutSweep);DB.raw.close();});
  return server;
 }
 

@@ -1,7 +1,7 @@
 const time=value=>value==null?'—':new Date(value*1000).toLocaleString('zh-CN',{timeZone:'Asia/Singapore',hour12:false});
 const roles={owner:'站长',admin:'管理员',member:'成员'};
 const outcomes={pending:'等待响应',accepted:'已受理',rejected:'已拒绝',unknown:'待核对',historical:'历史回填'};
-const statuses={submitting:'正在提交',unknown:'待核对',queued:'排队中',running:'生成中',succeeded:'成功',failed:'失败',expired:'结果过期'};
+const statuses={submitting:'正在提交',unknown:'待核对',queued:'排队中',running:'生成中',succeeded:'成功',failed:'失败',expired:'结果过期',timed_out:'生图超时'};
 
 export function mountActivity({api,getUser,getEpoch,openDialog}){
  const $=id=>document.getElementById(id),dialog=$('activity-dialog');

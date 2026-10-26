@@ -218,7 +218,21 @@ async function invitationAdmin(req,env,user,path){
 
 // GB uses decimal bytes. Shared SQLite pages and provider-hosted outputs are not user files.
 export const USER_STORAGE_LIMIT = 1_000_000_000;
+export const GENERATION_TIMEOUT_SECONDS = 20 * 60;
+const ACTIVE_TASK_STATUSES = ['submitting','unknown','queued','running'];
+export const GENERATION_TIMEOUT_MESSAGE = '生图超时：即图 API 超过 20 分钟未返回结果，已停止查询，本次任务已结束。你可以重新生图，或在当前会话继续创作。';
+export async function expireTimedOutTasks(env,userId=null) {
+ const time=now();
+ return run(env.DB,`UPDATE tasks SET status='timed_out',error=?,updated_at=? WHERE status IN ('submitting','unknown','queued','running') AND created_at<=?${userId?' AND user_id=?':''}`,GENERATION_TIMEOUT_MESSAGE,time,time-GENERATION_TIMEOUT_SECONDS,...(userId?[userId]:[]));
+}
+async function accountStorageLimit(env,user) {
+ const state=await one(env.DB,'SELECT limit_bytes FROM account_storage WHERE user_id=?',user.id);
+ return state?.limit_bytes||USER_STORAGE_LIMIT;
+}
 export const RELEASES = [{
+ version:'2026.10.26.1',date:'2026-10-26',title:'生图超时自动结束',
+ changes:['生图提交后超过 20 分钟仍未返回结果，将显示「生图超时」并停止查询，排队和生成中的任务同样适用。','超时任务会作为已结束的创作保留，可重新生图，也可直接在当前会话继续创作；已有超时任务会自动检查并结束。']
+},{
  version:'2026.10.21.1',date:'2026-10-21',title:'同一会话，连续创作',
  changes:['生图完成后，可直接在当前会话输入新需求并发送，继续下一轮创作；对话和图片按轮保留。','完成结果新增「继续创作」入口，点击即可回到输入框。生成期间可以先写下一轮需求，完成后继续发送。']
 },{
@@ -274,10 +288,10 @@ export async function enforceStorage(env,user,protectedId=null,reserveBytes=0,ch
  // Retry incomplete physical deletes first. Never forget a file manifest before deletion succeeds.
  const pending=await env.DB.prepare('SELECT c.id FROM conversations c WHERE c.user_id=? AND c.deleted_at IS NOT NULL AND EXISTS(SELECT 1 FROM tasks t WHERE t.user_id=c.user_id AND (t.conversation_id=c.id OR (t.conversation_id IS NULL AND t.id=c.id)))').bind(user.id).all();
  for(const c of pending.results){await check();assert(await cleanDeletedConversation(env,user,c.id,check),'图片文件仍在清理，请稍后重试。',503);}
- const limit=USER_STORAGE_LIMIT;
+ const limit=await accountStorageLimit(env,user);
  let usage=await storageUsage(env,user.id);
  if(usage.bytes+reserveBytes<=limit)return usage;
- if(protectedId){const current=await storageUsage(env,user.id,protectedId);assert(current.bytes+reserveBytes<=limit,'当前会话已接近 1 GB，请新建会话后再提交。',507);}
+ if(protectedId){const current=await storageUsage(env,user.id,protectedId);assert(current.bytes+reserveBytes<=limit,`当前会话已接近 ${limit/1_000_000_000} GB，请新建会话后再提交。`,507);}
  while(usage.bytes+reserveBytes>limit){
   const candidate=await one(env.DB,`SELECT id FROM (
    SELECT c.id,c.created_at FROM conversations c WHERE c.user_id=? AND c.deleted_at IS NULL AND c.id<>? AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.conversation_id=c.id AND t.user_id=c.user_id AND t.status IN ('submitting','unknown','queued','running') AND t.created_at>?)
@@ -292,7 +306,7 @@ export async function enforceStorage(env,user,protectedId=null,reserveBytes=0,ch
 async function storageSnapshot(env,user) {
  const usage=await storageUsage(env,user.id),state=await one(env.DB,'SELECT * FROM account_storage WHERE user_id=?',user.id);
  const pending=await one(env.DB,'SELECT 1 AS found FROM conversations c JOIN tasks t ON (t.conversation_id=c.id OR (t.conversation_id IS NULL AND t.id=c.id)) AND t.user_id=c.user_id WHERE c.user_id=? AND c.deleted_at IS NOT NULL LIMIT 1',user.id);
- return {usedBytes:usage.bytes,limitBytes:USER_STORAGE_LIMIT,pendingCleanup:!!pending,notice:state&&state.notice_revision>state.acknowledged_revision?{revision:state.notice_revision,conversations:state.notice_conversations,tasks:state.notice_tasks,createdAt:state.notice_at}:null};
+ return {usedBytes:usage.bytes,limitBytes:await accountStorageLimit(env,user),pendingCleanup:!!pending,notice:state&&state.notice_revision>state.acknowledged_revision?{revision:state.notice_revision,conversations:state.notice_conversations,tasks:state.notice_tasks,createdAt:state.notice_at}:null};
 }
 export async function maintainAccountStorage(env,user) {
  return withStorageLock(env,user,async check=>{
@@ -301,6 +315,7 @@ export async function maintainAccountStorage(env,user) {
  });
 }
 export async function maintainExistingStorage(env) {
+ await expireTimedOutTasks(env);
  let after='',failures=0;
  for(;;){const rows=await env.DB.prepare('SELECT id FROM users WHERE id>? ORDER BY id LIMIT 100').bind(after).all();if(!rows.results.length)break;
   for(const user of rows.results){try{const s=await maintainAccountStorage(env,user);if(s.cleanupError)failures++;}catch{failures++;}after=user.id;}
@@ -325,7 +340,7 @@ export function imageInfo(bytes) {
 }
 async function checkFile(file, mask=false) {assert(file && typeof file.arrayBuffer==='function' && file.size>0,'请选择一张有效的图片。');assert(file.size<=20*1024*1024,'每张图片不能超过 20 MiB。',413);assert(TYPES.has(file.type) && (!mask||file.type==='image/png'),'参考图仅支持 PNG、JPG、WebP；遮罩必须是 PNG。');const content=await file.arrayBuffer();const info=imageInfo(content);assert(info.type===file.type,'图片格式与文件内容不匹配，请重新导出后上传。');return {info,hash:await sha(content)};}
 async function upstream(path,key,options={}) {
-  try {return await fetch(UPSTREAM+path,{...options,headers:{...options.headers,Authorization:`Bearer ${key}`},signal:AbortSignal.timeout(90000)});} catch {throw new AppError('与生图服务的连接暂时中断。请求可能已被受理，请使用「恢复原提交」核对，避免重复扣费。',504);}
+  try {return await fetch(UPSTREAM+path,{...options,headers:{...options.headers,Authorization:`Bearer ${key}`},signal:options.signal||AbortSignal.timeout(90000)});} catch {throw new AppError('与生图服务的连接暂时中断。请求可能已被受理，请使用「恢复原提交」核对，避免重复扣费。',504);}
 }
 // Error meanings transcribed from the user-provided 即图调用文档.html (2026-10-18).
 export const DOCUMENTED_HTTP_ERRORS = {
@@ -432,7 +447,7 @@ async function createTask(req,env,user) {
   } else {const input=await bodyJSON(req,20000);p=validateParams(input);conversationId=input.conversationId;uiSettings=cleanSettings(input.uiSettings);assert(p.mode==='text','图生图请通过上传窗口选择参考图片。');forward=JSON.stringify({model:p.model,prompt:p.prompt,n:p.n,size:p.size,async:true});headers['Content-Type']='application/json';}
   const fingerprint=await sha(JSON.stringify([p.mode,p.model,p.prompt,p.n,p.size,fingerprints,await sha(key),...(conversationId?[conversationId]:[])]));
   const existing=await one(env.DB,'SELECT * FROM tasks WHERE user_id=? AND idempotency_key=?',user.id,idem);
-  if(existing){assert(existing.fingerprint===fingerprint,'恢复原提交时，请保持原来的文字、参数和图片不变。',409);if(existing.upstream_id || ['succeeded','failed','expired'].includes(existing.status))return json({task:publicTask(existing)});}
+  if(existing){assert(existing.fingerprint===fingerprint,'恢复原提交时，请保持原来的文字、参数和图片不变。',409);if(existing.upstream_id || ['succeeded','failed','expired','timed_out'].includes(existing.status))return json({task:publicTask(existing)});}
   await rate(env.DB,`generate:${user.id}`,20,60);
   let task;
   await withStorageLock(env,user,async check=>{
@@ -456,43 +471,56 @@ async function createTask(req,env,user) {
     await run(env.DB,'UPDATE conversations SET settings=COALESCE(?,settings),updated_at=? WHERE id=? AND user_id=?',uiSettings,now(),conversationId,user.id);
     task=await one(env.DB,'SELECT * FROM tasks WHERE id=?',taskId);
    }
-   if(task.upstream_id||['succeeded','failed','expired'].includes(task.status))return;
-   try{await saveTaskReferences(env,user,task,referenceInputs);await check();await enforceStorage(env,user,task.conversation_id||task.id,0,check);}catch(e){await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?','unknown',storedError(e),now(),task.id);throw e;}
+   if(task.upstream_id||['succeeded','failed','expired','timed_out'].includes(task.status))return;
+   try{await saveTaskReferences(env,user,task,referenceInputs);await check();await enforceStorage(env,user,task.conversation_id||task.id,0,check);}catch(e){await run(env.DB,`UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=? AND status<>'timed_out'`,'unknown',storedError(e),now(),task.id);throw e;}
   });
-  if(task.upstream_id||['succeeded','failed','expired'].includes(task.status))return json({task:publicTask(task)});
-  await visibleTask(env,user,task.id);
+  if(task.upstream_id||['succeeded','failed','expired','timed_out'].includes(task.status))return json({task:publicTask(task)});
+  await expireTimedOutTasks(env,user.id);
+  task=await visibleTask(env,user,task.id);
+  if(task.status==='timed_out')return json({task:publicTask(task)});
   const activityId=uid(),startedAt=now();
   await run(env.DB,"INSERT INTO api_activity(id,task_id,user_id,email,started_at,source,mode,model,requested_count,outcome,task_status,updated_at) VALUES (?,?,?,?,?,'live',?,?,?,'pending',?,?)",activityId,task.id,user.id,user.email,startedAt,p.mode,p.model,p.n,task.status,startedAt);
   let data,responseStatus=null;
   try{
-   const response=await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward});
+   const response=await upstream(p.mode==='text'?'/v1/images/generations':'/v1/images/edits',key,{method:'POST',headers:{...headers,'Idempotency-Key':idem},body:forward,signal:AbortSignal.timeout(Math.max(1,Math.min(90000,(task.created_at+GENERATION_TIMEOUT_SECONDS)*1000-Date.now())))});
    responseStatus=response.status;data=await upstreamJSON(response);
    const id=data.id??data.jitu?.request_id;assert(id!=null&&/^[a-zA-Z0-9_-]{1,150}$/.test(String(id)),'生图服务未返回有效任务编号，请保留原提交并稍后核对。',502);
    const acceptedStatus=data.data?'succeeded':['queued','running','succeeded','failed','expired'].includes(data.status)?data.status:'queued';
    await run(env.DB,"UPDATE api_activity SET outcome='accepted',http_status=?,responded_at=?,upstream_id=?,task_status=?,updated_at=? WHERE id=?",responseStatus,now(),String(id),acceptedStatus,now(),activityId);
   }
-  catch(e){const ambiguous=!responseStatus||e.status>=500||responseStatus===429||(responseStatus>=200&&responseStatus<300);
+  catch(e){await expireTimedOutTasks(env,user.id);const latest=await visibleTask(env,user,task.id);if(latest.status==='timed_out')return json({task:publicTask(latest)});const ambiguous=!responseStatus||e.status>=500||responseStatus===429||(responseStatus>=200&&responseStatus<300);
    await run(env.DB,'UPDATE api_activity SET outcome=?,http_status=?,responded_at=?,updated_at=? WHERE id=?',ambiguous?'unknown':'rejected',responseStatus,now(),now(),activityId);
-   await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?',ambiguous?'unknown':'failed',storedError(e),now(),task.id);throw e;
+   await run(env.DB,`UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=? AND status<>'timed_out'`,ambiguous?'unknown':'failed',storedError(e),now(),task.id);throw e;
   }
+  await expireTimedOutTasks(env,user.id);
+  if((await visibleTask(env,user,task.id)).status==='timed_out')return json({task:publicTask(await visibleTask(env,user,task.id))});
   const upstreamID=data.id??data.jitu?.request_id;assert(upstreamID!=null,'生图服务未返回任务编号，请保留原提交并稍后核对。',502);
   assert(/^[a-zA-Z0-9_-]{1,150}$/.test(String(upstreamID)),'生图服务返回的任务编号无法识别，请联系支持核对。',502);
   const status=data.data?'succeeded':['queued','running','succeeded','failed','expired'].includes(data.status)?data.status:'queued';
   const error=status==='failed'?JSON.stringify(explainUpstreamError(data)):null;
-  await run(env.DB,'UPDATE tasks SET upstream_id=?,status=?,error=?,updated_at=? WHERE id=?',String(upstreamID),status,error,now(),task.id);
-  return json({task:publicTask({...task,upstream_id:String(upstreamID),status,error}),result:data.data?data:undefined},202);
+  await run(env.DB,`UPDATE tasks SET upstream_id=?,status=?,error=?,updated_at=? WHERE id=? AND status<>'timed_out'`,String(upstreamID),status,error,now(),task.id);
+  const saved=await visibleTask(env,user,task.id);
+  return json({task:publicTask(saved),result:saved.status==='succeeded'&&data.data?data:undefined},202);
 }
-export function publicTask(t) {const errorInfo=readTaskError(t.error);let uiSettings=null;try{uiSettings=JSON.parse(t.ui_settings);}catch{}return {id:t.id,conversationId:t.conversation_id||t.id,uiSettings,apiProfileId:t.api_profile_id||null,references:(t.references_ready===0?[]:taskReferences(t)).map(({index,kind,name,type,size})=>({index,kind,name,type,size})),upstreamId:t.upstream_id,idempotencyKey:t.idempotency_key,mode:t.mode,prompt:t.prompt,model:t.model,size:t.size,n:t.count,status:t.created_at+43200<now()&&['succeeded','queued','running'].includes(t.status)?'expired':t.status,error:errorInfo?.reason||null,errorInfo,createdAt:t.created_at,updatedAt:t.updated_at,charged:t.charged,balance:t.balance};}
+export function publicTask(t) {if(ACTIVE_TASK_STATUSES.includes(t.status)&&t.created_at+GENERATION_TIMEOUT_SECONDS<=now())t={...t,status:'timed_out',error:GENERATION_TIMEOUT_MESSAGE};const errorInfo=readTaskError(t.error);let uiSettings=null;try{uiSettings=JSON.parse(t.ui_settings);}catch{}return {id:t.id,conversationId:t.conversation_id||t.id,uiSettings,apiProfileId:t.api_profile_id||null,references:(t.references_ready===0?[]:taskReferences(t)).map(({index,kind,name,type,size})=>({index,kind,name,type,size})),upstreamId:t.upstream_id,idempotencyKey:t.idempotency_key,mode:t.mode,prompt:t.prompt,model:t.model,size:t.size,n:t.count,status:t.created_at+43200<now()&&t.status==='succeeded'?'expired':t.status,error:errorInfo?.reason||null,errorInfo,createdAt:t.created_at,updatedAt:t.updated_at,charged:t.charged,balance:t.balance};}
 async function taskResult(env,user,id,req) {
+  await expireTimedOutTasks(env,user.id);
   const task=await visibleTask(env,user,id);
-  if(!task.upstream_id)return {task:publicTask(task)};
+  if(task.status==='timed_out'||!task.upstream_id)return {task:publicTask(task)};
   if(task.created_at+43200<now()){await run(env.DB,'UPDATE tasks SET status=?,updated_at=? WHERE id=?','expired',now(),task.id);return {task:publicTask({...task,status:'expired'})};}
   const key=await taskKey(req,env,user,task);
-  const data=await upstreamJSON(await upstream(`/v1/images/tasks/${encodeURIComponent(task.upstream_id)}`,key));
+  const remaining=(task.created_at+GENERATION_TIMEOUT_SECONDS)*1000-Date.now();
+  let data;
+  try{
+   data=await upstreamJSON(await upstream(`/v1/images/tasks/${encodeURIComponent(task.upstream_id)}`,key,ACTIVE_TASK_STATUSES.includes(task.status)?{signal:AbortSignal.timeout(Math.max(1,Math.min(90000,remaining)))}:{}));
+  }catch(e){await expireTimedOutTasks(env,user.id);const latest=await visibleTask(env,user,id);if(latest.status==='timed_out')return {task:publicTask(latest)};throw e;}
+  await expireTimedOutTasks(env,user.id);
+  if((await visibleTask(env,user,id)).status==='timed_out')return {task:publicTask(await visibleTask(env,user,id))};
   assert(['queued','running','succeeded','failed','expired'].includes(data.status),'暂时无法识别生成状态，请稍后再查询。',502);
   const error=data.status==='failed'?JSON.stringify(explainUpstreamError(data)):null;
-  await run(env.DB,'UPDATE tasks SET status=?,error=?,updated_at=?,charged=COALESCE(?,charged),balance=COALESCE(?,balance) WHERE id=?',data.status,error,now(),data.result?.jitu?.charged??null,data.result?.jitu?.balance??null,task.id);
-  return {task:publicTask({...task,status:data.status,error,charged:data.result?.jitu?.charged??task.charged,balance:data.result?.jitu?.balance??task.balance}),result:data.status==='succeeded'?data.result:undefined};
+  await run(env.DB,`UPDATE tasks SET status=?,error=?,updated_at=?,charged=COALESCE(?,charged),balance=COALESCE(?,balance) WHERE id=? AND status<>'timed_out'`,data.status,error,now(),data.result?.jitu?.charged??null,data.result?.jitu?.balance??null,task.id);
+  const saved=await visibleTask(env,user,id);
+  return {task:publicTask(saved),result:saved.status==='succeeded'?data.result:undefined};
 }
 export function safeImageURL(raw) {
   let u;try{u=new URL(raw);}catch{throw new AppError('图片下载地址无法读取。',502);}
@@ -564,6 +592,7 @@ export function createHandler(assets) {
         const account=await one(env.DB,'SELECT * FROM users WHERE email=?',email);const stored=account?.password_hash||'pbkdf2:100000:00000000000000000000000000000000:0000000000000000000000000000000000000000000000000000000000000000';const valid=await passwordMatches(input.password,stored);assert(account&&account.password_hash&&valid,'邮箱或密码不正确。首次使用请切换到注册。',401);return await sessionResponse(env.DB,account);
       }
       assert(user,'请先登录你的账号。',401);
+      await expireTimedOutTasks(env,user.id);
       if(path.startsWith('/api/admin/activity/'))return await ownerActivity(req,env,user,path);
       if(path.startsWith('/api/admin/'))return await invitationAdmin(req,env,user,path);
       if(path==='/api/updates/seen'&&req.method==='POST'){const input=await bodyJSON(req);assert(input.version===RELEASES[0].version,'网站已有新版本，请刷新后查看。',409);await run(env.DB,'UPDATE users SET last_seen_release=? WHERE id=?',input.version,user.id);return json({ok:true});}
