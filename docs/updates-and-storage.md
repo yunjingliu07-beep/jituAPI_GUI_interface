@@ -68,8 +68,8 @@ curl --fail --silent --show-error https://imagemeow.top/api/updates
 生产站需手动执行以下命令（更新脚本会停服、备份、迁移并重启；不要只重启服务）：
 
 ```bash
-cd /opt/image-meow
-git pull --ff-only origin main
+cd /opt/image-meow &&
+sudo git pull --ff-only origin main &&
 sudo bash deploy/ubuntu/update.sh
 ```
 

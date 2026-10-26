@@ -8,6 +8,8 @@ Sites 项目 `appgprj_6ad3602eac1c8191beccd3a66e796b09` 作为完整源码副本
 
 GitHub 仓库：`https://github.com/yunjingliu07-beep/jituAPI_GUI_interface`。服务器由用户手动拉取更新；发布 Sites 不更新生产服务器。仅同步维护文档、构建配置时，在服务器拉取代码即可；若运行代码有变化，需重启，若存在尚未应用的迁移则使用更新脚本：
 
+**服务器拉取代码必须使用 `sudo git pull`。** `/opt/image-meow` 由 root 管理，普通登录用户直接运行 `git pull` 会遇到所有权检查或 `.git/FETCH_HEAD: Permission denied`。`safe.directory` 只处理 Git 的信任检查，不授予写权限。后续任务提供服务器命令时应保留 `sudo`，并用 `&&` 连接依赖步骤，确保拉取失败时停止。不要通过更改源码目录所有者或放宽权限来解决；服务账号应保持无源码写权限。
+
 ```bash
 cd /opt/image-meow &&
 sudo git pull --ff-only origin main &&

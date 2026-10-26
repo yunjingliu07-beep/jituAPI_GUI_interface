@@ -17,6 +17,13 @@ Its retained custom-domain binding is not evidence of current public DNS routing
 - Do not run commands on the user's Ubuntu server. Give manual update instructions
   after changes. Frontend-only changes with no pending schema changes require a pull
   and service restart; schema changes require the backup/migration update script.
+- The production checkout `/opt/image-meow` is owned and managed by root. Every
+  server update instruction must use `sudo git pull --ff-only origin main`,
+  followed by the appropriate `sudo` update script or service restart. Chain
+  dependent steps with `&&` so a failed pull cannot continue into deployment.
+  `safe.directory` only establishes Git trust; it does not grant write access to
+  `.git/FETCH_HEAD`. Do not omit `sudo` or change checkout ownership/permissions
+  to work around this error; the `image-meow` service account must not own code.
 - Never copy server data, secrets, uploads, runtime files or Git credentials into
   either repository. Code synchronization does not synchronize databases or files.
 - Applied SQLite migration files in `drizzle/` are immutable. The Sites build uses

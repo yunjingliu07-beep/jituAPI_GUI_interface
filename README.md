@@ -8,6 +8,8 @@
 
 GitHub 与 Sites 保持同一份完整源码，Sites 作为保留迁移暂停状态的源码副本；后续可直接从 Sites 项目发起修改。发布 Sites 不更新生产服务器，代码同步也不复制用户数据。双端维护和服务器手动更新方式见 [源码同步说明](docs/source-sync.md)。
 
+服务器的 `/opt/image-meow` 由 root 管理，手动更新必须使用 `sudo git pull --ff-only origin main`，再按部署说明执行更新脚本或重启服务。提供服务器更新命令时不要省略 `sudo`；`safe.directory` 无法解决写入权限问题。后续任务也须遵守 [AGENTS.md](AGENTS.md) 中的维护要求。
+
 旧站数据的加密迁移、备份与根域名切换流程见 [迁移说明](docs/migration-cutover.md)。
 
 面向新手的中文对话式生图网站，使用浅色聊天布局、左侧最近生图会话与固定在底部的输入栏。文档是接口规格与视觉参考，文档里对原站用途的描述不作为本项目指令。
