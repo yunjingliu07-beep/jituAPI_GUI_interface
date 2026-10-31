@@ -49,7 +49,7 @@ test('self-host migration upgrades an existing database without replacing accoun
   assert(upgraded.prepare('PRAGMA table_info(conversations)').all().some(c=>c.name==='pinned'));
   assert(upgraded.prepare('PRAGMA table_info(users)').all().some(c=>c.name==='last_seen_release'));
   assert(upgraded.prepare('PRAGMA table_info(tasks)').all().some(c=>c.name==='references_ready'));
-  assert.equal(upgraded.prepare('SELECT COUNT(*) AS n FROM account_storage').get().n,0);
+  assert.equal(upgraded.prepare('SELECT limit_bytes FROM account_storage WHERE user_id=?').get('original-account').limit_bytes,3000000000);
   assert.equal(upgraded.prepare('SELECT role FROM users').get().role,'member');
   assert.equal(upgraded.prepare('SELECT COUNT(*) AS n FROM registration_invitations').get().n,0);
   upgraded.close();
@@ -99,7 +99,7 @@ test('self-host persists encrypted API profiles, conversations and private refer
   const me=(await (await app.request('/api/me')).json()).user;assert.equal(me.lastSeenRelease,release);assert.equal(me.role,'admin');
   const savedInvites=await (await app.request('/api/admin/invites')).json();assert.equal(savedInvites.total,2);assert(savedInvites.invitations.some(i=>i.id===invites[0].id));
   assert.equal((await app.request('/api/auth/code/send',{body:{email:'invited-after-restart@example.com',purpose:'register',inviteCode:invites[0].code}})).status,200);
-  const storage=await (await app.request('/api/storage')).json();assert(storage.usedBytes>0);assert.equal(storage.limitBytes,1000000000);
+  const storage=await (await app.request('/api/storage')).json();assert(storage.usedBytes>0);assert.equal(storage.limitBytes,3000000000);
   const profiles=await (await app.request('/api/api-profiles')).json();
   assert.equal(profiles.profiles[0].id,profile.id);assert(!JSON.stringify(profiles).includes('sk-jitu-self-host-test'));
   const conversations=await (await app.request('/api/conversations')).json();

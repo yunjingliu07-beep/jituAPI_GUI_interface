@@ -40,7 +40,7 @@ test('Sites package keeps the same business schema without replaying the server 
    assert.equal(await readFile(join(dir,'dist/drizzle',entry.tag+'.sql'),'utf8'),original);
    server.exec(original);site.exec(original);
   }
-  const businessSchema=db=>db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE name IN ('tasks','account_storage','tasks_result_sync') ORDER BY type,name").all();
+  const businessSchema=db=>db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE name IN ('tasks','account_storage','tasks_result_sync','app_data_migrations') ORDER BY type,name").all();
   assert.deepEqual(businessSchema(site),businessSchema(server));
   const schema=db=>db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE name LIKE 'api_activity%' ORDER BY type,name").all();
   assert.deepEqual(schema(site),schema(server));
@@ -59,6 +59,7 @@ test('Sites package keeps the same business schema without replaying the server 
   const {stdout:list}=await exec('tar',['-tzf',archive]);
   assert(list.includes('./drizzle/0006_owner_activity.sql'));
   assert(list.includes('./drizzle/0008_generated_results.sql'));
+  assert(list.includes('./drizzle/0009_storage_quota_3gb.sql'));
   assert(list.includes('./dist/server/index.js'));assert(list.includes('./.openai/hosting.json'));
   assert(!list.includes('dist/drizzle/'));assert(!list.includes('worker/core.js'));
   const {stdout:packed}=await exec('tar',['-xOzf',archive,'./drizzle/0006_owner_activity.sql']);

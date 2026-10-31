@@ -219,7 +219,7 @@ async function invitationAdmin(req,env,user,path){
 }
 
 // GB uses decimal bytes; original inputs and archived outputs count toward each account.
-export const USER_STORAGE_LIMIT = 1_000_000_000;
+export const USER_STORAGE_LIMIT = 3_000_000_000;
 export const GENERATION_TIMEOUT_SECONDS = 20 * 60;
 const ACTIVE_TASK_STATUSES = ['submitting','unknown','queued','running'];
 export const GENERATION_TIMEOUT_MESSAGE = '生图超时：即图 API 超过 20 分钟未返回结果，已停止查询，本次任务已结束。你可以重新生图，或在当前会话继续创作。';
@@ -232,6 +232,9 @@ async function accountStorageLimit(env,user) {
  return state?.limit_bytes||USER_STORAGE_LIMIT;
 }
 export const RELEASES = [{
+ version:'2026.10.31.2',date:'2026-10-31',title:'个人存储空间提升至 3 GB',
+ changes:['所有低于 3 GB 的账号配额提升至 3 GB，新账号默认获得 3 GB；原有 3 GB 或更高配额保持不变。']
+},{
  version:'2026.10.31.1',date:'2026-10-31',title:'输入框与参考图预览优化',
  changes:['底部输入框宽度与输入区域高度放大 20%，小屏幕继续自适应可用宽度。','点击输入框上方的参考图缩略图即可放大查看原图和文件名，方便发送前核对；支持关闭按钮、Esc 和点击弹窗外关闭。']
 },{
@@ -276,7 +279,7 @@ export async function storageUsage(env,userId,conversationId=null) {
 }
 async function withStorageLock(env,user,action) {
  const token=uid(),time=Date.now();
- const row=await one(env.DB,'INSERT INTO account_storage(user_id,lease_token,lease_until) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET lease_token=excluded.lease_token,lease_until=excluded.lease_until WHERE account_storage.lease_until<=? RETURNING user_id',user.id,token,time+120000,time);
+ const row=await one(env.DB,'INSERT INTO account_storage(user_id,lease_token,lease_until,limit_bytes) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET lease_token=excluded.lease_token,lease_until=excluded.lease_until WHERE account_storage.lease_until<=? RETURNING user_id',user.id,token,time+120000,USER_STORAGE_LIMIT,time);
  assert(row,'空间正在整理，请稍后重试；生图请求可使用「恢复原提交」。',429);
  let lost=false;
  const check=async()=>{assert(!lost,'空间整理已中断，请稍后重试。',503);const r=await one(env.DB,'SELECT lease_token FROM account_storage WHERE user_id=?',user.id);assert(r?.lease_token===token,'空间整理已中断，请稍后重试。',503);};

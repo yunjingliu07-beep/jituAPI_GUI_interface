@@ -119,7 +119,7 @@ const releaseKey=()=>updateFeed?`${releaseOwner()}:${updateFeed.current.version}
 function formatStorage(bytes){if(bytes<1000000)return (bytes/1000).toFixed(bytes<1000?1:0)+' KB';if(bytes<1000000000)return (bytes/1000000).toFixed(1)+' MB';return (bytes/1000000000).toFixed(2)+' GB';}
 function renderStorage(){
  const s=storageState;$('#storage-usage').textContent=user?(s?`${formatStorage(s.usedBytes)} / ${formatStorage(s.limitBytes)}`:'正在读取…'):'登录后查看';
- $('#storage-progress').value=s?Math.min(s.usedBytes,s.limitBytes):0;$('#storage-progress').max=s?.limitBytes||1000000000;
+ $('#storage-progress').value=s?Math.min(s.usedBytes,s.limitBytes):0;$('#storage-progress').max=s?.limitBytes||3000000000;
  $('#storage-status').textContent=s?.cleanupError||`聊天、生成图片、参考图和遮罩共用 ${s?formatStorage(s.limitBytes):'账号可用空间'}。空间不足时按创建时间清理最早会话，包括已置顶的会话；正在生成的会话暂不清理。清理后无法恢复，请及时下载重要图片。`;
  $('#storage-banner').hidden=!user||!(s?.notice||s?.cleanupError);
  $('#storage-banner-text').textContent=s?.notice?`空间整理提醒：已自动移除 ${s.notice.conversations} 段最早的聊天及其生成图片、上传素材。${s.pendingCleanup?'部分文件仍待清理。':''}`:s?.cleanupError||'';

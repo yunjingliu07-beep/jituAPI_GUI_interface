@@ -76,7 +76,7 @@ test('automatic storage cleanup preserves activity while deleting original task 
  const a=await setup();try{
   const r=await submit(a);assert.equal(r.status,202);const task=(await r.json()).task;
   a.db.raw.prepare("UPDATE tasks SET status='succeeded',created_at=1 WHERE id=?").run(task.id);
-  // Inflate recorded text size to cross the quota without writing 1 GB to disk.
+  // Inflate recorded text size to cross the quota without writing GBs to disk.
   a.db.raw.prepare('UPDATE tasks SET reference_files=? WHERE id=?').run(JSON.stringify([{key:`references/${a.accounts.member.id}/${task.id}/0`,size:USER_STORAGE_LIMIT,kind:'image'}]),task.id);
   assert((await storageUsage(a.env,a.accounts.member.id)).bytes>USER_STORAGE_LIMIT);
   assert.equal((await a.req('/api/storage',{actor:'member'})).status,200);

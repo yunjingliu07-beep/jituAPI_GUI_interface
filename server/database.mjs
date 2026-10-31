@@ -12,7 +12,8 @@ const migrations=[
  ['0005_invitations','users','role'],
  ['0006_owner_activity','api_activity','task_id'],
  ['0007_account_storage_limit','account_storage','limit_bytes'],
- ['0008_generated_results','tasks','result_files']
+ ['0008_generated_results','tasks','result_files'],
+ ['0009_storage_quota_3gb',null,null]
 ];
 export function databaseFile(directory){return resolve(directory,'studio.sqlite');}
 export function migrate(directory){
@@ -21,7 +22,10 @@ export function migrate(directory){
  try{
   db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;');
   for(const [name,table,column] of migrations){
-   if(db.prepare(`PRAGMA table_info(${table})`).all().some(c=>c.name===column))continue;
+   const applied=table
+    ?db.prepare(`PRAGMA table_info(${table})`).all().some(c=>c.name===column)
+    :db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='app_data_migrations'").get()&&db.prepare('SELECT 1 FROM app_data_migrations WHERE name=?').get(name);
+   if(applied)continue;
    db.exec('BEGIN IMMEDIATE');
    try{db.exec(readFileSync(new URL(`../drizzle/${name}.sql`,import.meta.url),'utf8'));db.exec('COMMIT');}
    catch(error){db.exec('ROLLBACK');throw error;}
@@ -37,6 +41,7 @@ export function openDatabase(directory){
  raw.prepare('SELECT reference_files,references_ready,api_profile_id,api_key_hash,result_files,result_count,results_ready,result_error FROM tasks LIMIT 0').all();
  raw.prepare('SELECT pinned,deleted_at FROM conversations LIMIT 0').all();
  raw.prepare('SELECT notice_revision,limit_bytes FROM account_storage LIMIT 0').all();
+ if(!raw.prepare("SELECT 1 FROM app_data_migrations WHERE name='0009_storage_quota_3gb'").get())throw new Error('Apply database migrations before starting the service.');
  raw.prepare('SELECT code_hash,used_by FROM registration_invitations LIMIT 0').all();
  raw.prepare('SELECT task_id,source,outcome FROM api_activity LIMIT 0').all();
  return {raw,batch(statements){raw.exec('BEGIN IMMEDIATE');try{const results=statements.map(s=>s._batchRun());raw.exec('COMMIT');return Promise.resolve(results);}catch(e){raw.exec('ROLLBACK');throw e;}},prepare(sql){let values=[];const statement=raw.prepare(sql);const query={

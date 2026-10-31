@@ -34,7 +34,7 @@ test('release feed is public; acknowledgement persists per account and rejects u
   const outsider=await createHandler({}).fetch(new Request(origin+'/api/updates/seen',{method:'POST',headers:{origin,'Content-Type':'application/json'},body:JSON.stringify({version:feed.current.version})}),a.env,{});assert.equal(outsider.status,401);
  }finally{a.close();}
 });
-test('exactly 1 GB fits; overflow removes oldest complete conversations and their files, not other accounts',async()=>{
+test('exactly 3 GB fits; overflow removes oldest complete conversations and their files, not other accounts',async()=>{
  const a=await setup();try{
   const other=crypto.randomUUID();a.db.raw.prepare('INSERT INTO users(id,email,created_at) VALUES(?,?,1)').run(other,'other@example.com');
   const theirs=await seed(a,{userId:other,size:900000000});
@@ -53,7 +53,7 @@ test('exactly 1 GB fits; overflow removes oldest complete conversations and thei
 });
 test('legacy conversations are also cleaned and interrupted file deletion retains tracked bytes and a durable notice',async()=>{
  const a=await setup();try{
-  const old=await seed(a,{legacy:true,created:1,size:600000000});await seed(a,{created:2,size:600000000});
+  const old=await seed(a,{legacy:true,created:1,size:USER_STORAGE_LIMIT*0.6});await seed(a,{created:2,size:USER_STORAGE_LIMIT*0.6});
   const originalDelete=a.bucket.delete;a.bucket.delete=async()=>{throw new Error('temporarily unavailable');};
   let state=await (await a.req('/api/storage')).json();assert(state.cleanupError);assert.equal(state.pendingCleanup,true);assert.equal(state.notice.conversations,1);assert(state.usedBytes>USER_STORAGE_LIMIT);assert(a.bucket.objects.has(old.key));
   assert(a.db.raw.prepare('SELECT reference_files FROM tasks WHERE id=?').get(old.task));
@@ -93,16 +93,16 @@ test('partial uploads remain accounted for until their manifests can be physical
 });
 test('startup applies quotas to existing inactive users and preserves cleanup notifications',async()=>{
  const a=await setup();try{
-  const old=await seed(a,{size:700000000});await seed(a,{created:2,size:700000000});
+  const old=await seed(a,{size:USER_STORAGE_LIMIT*0.7});await seed(a,{created:2,size:USER_STORAGE_LIMIT*0.7});
   assert.deepEqual(await maintainExistingStorage(a.env),{failures:0});assert(!a.bucket.objects.has(old.key));assert((await storageUsage(a.env,a.userId)).bytes<=USER_STORAGE_LIMIT);
   const state=await (await a.req('/api/storage')).json();assert(state.notice);assert.equal(state.notice.conversations,1);
  }finally{a.close();}
 });
 test('stale acknowledgements cannot hide a newer cleanup event; expired leases can be recovered',async()=>{
  const a=await setup();try{
-  const old=await seed(a,{size:600000000});const keep=await seed(a,{created:2,size:600000000});
+  const old=await seed(a,{size:USER_STORAGE_LIMIT*0.6});const keep=await seed(a,{created:2,size:USER_STORAGE_LIMIT*0.6});
   const first=await (await a.req('/api/storage')).json();assert(first.notice);
-  await seed(a,{created:3,size:600000000});const second=await (await a.req('/api/storage')).json();assert(second.notice.revision>first.notice.revision);
+  await seed(a,{created:3,size:USER_STORAGE_LIMIT*0.6});const second=await (await a.req('/api/storage')).json();assert(second.notice.revision>first.notice.revision);
   await a.req('/api/storage/ack',{revision:first.notice.revision});assert.equal((await (await a.req('/api/storage')).json()).notice.revision,second.notice.revision);
   a.db.raw.prepare('UPDATE account_storage SET lease_token=?,lease_until=1 WHERE user_id=?').run('dead-process',a.userId);
   assert.equal((await a.req('/api/storage')).status,200);

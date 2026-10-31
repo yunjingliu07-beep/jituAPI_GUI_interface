@@ -92,7 +92,7 @@ test('migration grants the requested account 5 GB before startup cleanup and pre
   const snapshot=await createHandler({}).fetch(new Request(origin+'/api/storage',{headers:{cookie:`__Host-jitu=${token}`}}),{DB:db,BUCKET:mockBucket()},{});
   assert.equal((await snapshot.json()).limitBytes,5000000000);
   const other=await setup(db,'new@example.com');
-  assert.equal((await (await other.req('/api/storage')).json()).limitBytes,1000000000);
+  assert.equal((await (await other.req('/api/storage')).json()).limitBytes,3000000000);
   assert(!JSON.stringify(RELEASES[0]).includes('5 GB'));assert(!JSON.stringify(RELEASES).includes('ronnnlau'));
  }finally{db?.raw.close();await rm(dir,{recursive:true,force:true});}
 });
