@@ -12,6 +12,7 @@
 | 正式主机名 | `imagemeow.yoband.cn` |
 | 运行环境 | Node.js 24、Nginx、systemd、SQLite |
 | 源码目录 | `/opt/image-meow`，由 root 管理 |
+| 生产拉取远端 `origin` | `https://gitee.com/Texas0601Blaze/jituAPI_GUI_interface.git` |
 | 应用服务 | `image-meow.service`，使用无登录权限的 `image-meow` 账号 |
 | 后端监听 | `127.0.0.1:3000` |
 | 数据目录 | `/var/lib/image-meow` |
@@ -38,6 +39,8 @@ Sites 项目 `appgprj_6ad3602eac1c8191beccd3a66e796b09` 继续作为暂停中的
 旧域名是否重定向需另行配置。本次域名变更不自动修改 Resend 发件域名或验证记录，也不会迁移浏览器 Cookie；用户需在新域名重新登录。
 
 ## 后续维护
+
+GitHub 为唯一修改入口，Gitee 从 GitHub 单向自动同步，腾讯云服务器从 Gitee 手动拉取。生产服务器直连 GitHub 曾超时，不应再把其 `origin` 改回 GitHub；开发工作区仍可使用 GitHub。修改人和助手均应先提交 GitHub，核对 Gitee 的目标提交 SHA，再提供服务器更新命令。配置与故障排查见 [源码同步说明](source-sync.md)。
 
 仅更新 Markdown 等文档时，在服务器拉取即可，无需重启：
 
