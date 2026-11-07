@@ -13,7 +13,7 @@ let threads=new Map(),tasks=new Map(),runtimes=new Map(),pending=new Map(),image
 let inputSnapshots=new Map();
 let apiProfiles=[],selectedApiId=null,menuConversationId=null,renameTargetId=null,deleteTargetId=null,deleteAPIId=null;
 let deletedConversationIds=new Set(),guideAcknowledgedThisVisit=false,guideAfterAPI=false;
-let models=['gpt-image-2.5-flare','gpt-image-1k-2k-4k-th','gpt-image-2.5-sunburst','gpt-image-2','gpt-image-2.5'];
+let models=['gpt-image-2.5-flare','gpt-image-2.6','gpt-image-1k-2k-4k-th','gpt-image-2.5-sunburst','gpt-image-2','gpt-image-2.5'];
 const current=()=>threads.get(activeId);
 const runtime=id=>{if(!runtimes.has(id))runtimes.set(id,{});return runtimes.get(id)};
 const modelName=m=>m==='gpt-image-2.5-flare'?'GPT Image 2.5 Flare':m;

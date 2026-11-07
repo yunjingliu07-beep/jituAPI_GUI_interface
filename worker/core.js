@@ -232,6 +232,9 @@ async function accountStorageLimit(env,user) {
  return state?.limit_bytes||USER_STORAGE_LIMIT;
 }
 export const RELEASES = [{
+ version:'2026.11.07.1',date:'2026-11-07',title:'新增 GPT Image 2.6 模型',
+ changes:['可在模型列表中选择 gpt-image-2.6，沿用现有文生图、图生图和局部编辑的参数与提交方式。']
+},{
  version:'2026.10.31.2',date:'2026-10-31',title:'个人存储空间提升至 3 GB',
  changes:['所有低于 3 GB 的账号配额提升至 3 GB，新账号默认获得 3 GB；原有 3 GB 或更高配额保持不变。']
 },{
