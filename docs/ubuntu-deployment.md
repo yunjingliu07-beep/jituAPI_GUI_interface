@@ -4,6 +4,8 @@
 
 本文的首次安装步骤只适用于全新实例。当前生产已完成数据恢复，日常维护直接使用下方的更新流程，不要用首次安装创建空数据库或重新生成原加密主密钥。
 
+源码更新使用 **GitHub 主仓库 → Gitee 单向自动镜像 → 服务器手动拉取**。当前生产服务器的 `origin` 为 `https://gitee.com/Texas0601Blaze/jituAPI_GUI_interface.git`，以绕开该服务器直连 GitHub 超时的问题；开发工作区仍可使用 GitHub。所有修改提交 GitHub，不直接修改 Gitee；拉取前核对镜像提交，详见 [源码同步说明](source-sync.md)。
+
 ## 全新实例首次安装
 
 需要 Node.js 24、Nginx、Git、curl。后端仅监听 `127.0.0.1:3000`，轻量应用服务器防火墙对外开放 TCP 80、443；无需对外开放 3000。
@@ -11,12 +13,12 @@
 仅在已准备好运行环境的全新实例上执行；当前已迁移的生产服务器不需要重复执行：
 
 ```bash
-sudo git clone https://github.com/yunjingliu07-beep/jituAPI_GUI_interface.git /opt/image-meow &&
+sudo git clone https://gitee.com/Texas0601Blaze/jituAPI_GUI_interface.git /opt/image-meow &&
 cd /opt/image-meow &&
 sudo bash deploy/ubuntu/install.sh imagemeow.yoband.cn
 ```
 
-若目标目录已经存在，先确认内容及 Git 状态，不要清空目录或覆盖未知文件。克隆若要求 GitHub 凭据且您没有访问权限，应先由仓库所有者授权，不能把令牌或密码写进克隆 URL。
+若目标目录已经存在，先确认内容及 Git 状态，不要清空目录或覆盖未知文件。克隆若要求 Gitee 凭据且您没有访问权限，应先由仓库所有者授权，不能把令牌或密码写进克隆 URL。安装前核对镜像提交与要部署的 GitHub 版本一致。
 
 成功时返回 `{"ok":true}`。安装器新建无登录权限的 `image-meow` 服务账号，初始化 SQLite，配置 systemd 开机运行，并配置 Nginx 的健康检查和证书校验入口。首次安装随机生成独立加密主密钥，文件为 root-only，不会输出密钥。重复执行保留密钥、数据库和已有 HTTPS 配置。
 
@@ -58,7 +60,7 @@ systemctl list-timers certbot.timer
 
 | 路径 | 用途 |
 | --- | --- |
-| `/opt/image-meow` | GitHub 源代码，root 管理，服务账号不应拥有写权限 |
+| `/opt/image-meow` | 从 Gitee 拉取的源码，修改统一提交 GitHub；root 管理，服务账号不应拥有写权限 |
 | `/etc/image-meow/server.env` | 公网来源、端口、数据目录及 API 加密主密钥，权限 0600 |
 | `/var/lib/image-meow/studio.sqlite` | 账号、会话、任务及加密 API 记录 |
 | `/var/lib/image-meow/references` | 账号私有原参考图、遮罩 |
@@ -76,7 +78,7 @@ sudo journalctl -u image-meow -n 30 --no-pager
 sudo nginx -t
 ```
 
-日常更新由你在服务器手动执行，GitHub 推送不会自动拉取代码：
+日常更新由你在服务器手动执行。先确认 Gitee 已自动同步本次 GitHub 提交；平台同步不会自动更新生产服务器：
 
 ```bash
 cd /opt/image-meow &&
@@ -84,7 +86,7 @@ sudo git pull --ff-only origin main &&
 sudo bash deploy/ubuntu/update.sh
 ```
 
-`Already up to date` 只表示 Git 没有新提交，不能作为服务正常的判断。更新脚本会打印停服、备份、迁移、启动和健康检查五个阶段；停服可能需要等待已有请求完成（最多 120 秒），备份耗时取决于数据大小。执行期间保持终端连接，不要同时启动第二次更新。
+`Already up to date` 只表示本机与当前 Gitee 镜像没有新差异，不保证镜像已经同步 GitHub 的最新提交，也不能作为服务正常的判断。仅修改 Markdown 时拉取即可，无需运行更新脚本或重启；涉及运行代码和数据库迁移时按对应流程处理。更新脚本会打印停服、备份、迁移、启动和健康检查五个阶段；停服可能需要等待已有请求完成（最多 120 秒），备份耗时取决于数据大小。执行期间保持终端连接，不要同时启动第二次更新。
 
 备份在服务停止时将整个数据目录与配置文件保存至 `/var/backups/image-meow-update-*`，SQLite 在 WAL 模式下不能只复制一个正在使用的 `.sqlite` 文件。不要把备份放到网页目录或 Git 仓库。若更新失败或收到 HUP/INT/TERM，脚本保留非零退出码、备份和错误阶段，并尝试启动原本处于运行状态的服务；这不是代码或数据回滚，也不能保证错误的新代码能启动。强制结束进程或服务器断电时无法保证执行恢复。
 

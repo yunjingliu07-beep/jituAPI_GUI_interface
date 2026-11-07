@@ -11,6 +11,16 @@ old domain; do not run them against the current production deployment.
 
 - The user may start a change from the Sites project. Read its source, and check the
   GitHub `main` head before editing or pushing so newer work is not overwritten.
+- GitHub `yunjingliu07-beep/jituAPI_GUI_interface` is the authoritative write
+  repository. Gitee `https://gitee.com/Texas0601Blaze/jituAPI_GUI_interface.git` is
+  its one-way automatic Pull mirror. Submit all code and documentation changes to
+  GitHub; do not edit or push directly to Gitee or enable two-way synchronization.
+- On the Tencent Cloud production server only, `/opt/image-meow`'s `origin` must
+  point to the Gitee URL above because direct GitHub access times out. Development
+  checkouts may keep GitHub as `origin`; do not confuse these two remote roles.
+  Before a server update, confirm Gitee `main` has the intended GitHub commit.
+  Report the commit SHA and any inability to verify the mirror; a GitHub push or
+  Gitee import alone does not prove that production has received the update.
 - Keep the full tracked source tree in Sites and GitHub
   `yunjingliu07-beep/jituAPI_GUI_interface` synchronized after each change. Preserve
   both repositories' history; do not force-push to reconcile them.
@@ -31,6 +41,8 @@ old domain; do not run them against the current production deployment.
   to work around this error; the `image-meow` service account must not own code.
 - Never copy server data, secrets, uploads, runtime files or Git credentials into
   either repository. Code synchronization does not synchronize databases or files.
+  Mirror access tokens belong only in the platform's secure settings, never in
+  repository files, Git remote URLs, logs, or chat.
 - Applied SQLite migration files in `drizzle/` are immutable. The Sites build uses
   the explicit schema-only override in `drizzle/sites/` for migration 0006, whose
   original server migration contains a legacy historical-data backfill. Keep both

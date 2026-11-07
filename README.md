@@ -6,7 +6,9 @@
 
 腾讯云广州 Ubuntu 24.04 自托管部署见 [部署指南](docs/ubuntu-deployment.md)，本次迁移记录见 [生产迁移说明](docs/production-migration.md)。生产服务通过 systemd 的 `image-meow` 单元运行 `server/index.mjs`（`npm start` 指向同一入口），与本地预览脚本分开。
 
-GitHub 与 Sites 保持同一份完整源码，Sites 作为保留迁移暂停状态的源码副本；后续可直接从 Sites 项目发起修改。发布 Sites 不更新生产服务器，代码同步也不复制用户数据。双端维护和服务器手动更新方式见 [源码同步说明](docs/source-sync.md)。
+**后续修改与更新约定：GitHub 主仓库 → Gitee 单向自动镜像 → 腾讯云服务器手动拉取。** 所有代码和文档修改统一提交到 [GitHub](https://github.com/yunjingliu07-beep/jituAPI_GUI_interface)，[Gitee 镜像](https://gitee.com/Texas0601Blaze/jituAPI_GUI_interface)供国内服务器读取；不要直接在 Gitee 修改或启用双向同步。生产服务器 `/opt/image-meow` 的 `origin` 使用 Gitee 地址，开发工作区可继续使用 GitHub。
+
+GitHub 与 Sites 保持同一份完整源码，Sites 作为保留迁移暂停状态的源码副本；后续可直接从 Sites 项目发起修改。修改后先推送 GitHub，并确认 Gitee `main` 已同步目标提交，再通知服务器拉取。发布 Sites 不更新生产服务器，源码同步也不复制数据库和图片。完整维护流程见 [源码同步说明](docs/source-sync.md)。
 
 服务器的 `/opt/image-meow` 由 root 管理，手动更新必须使用 `sudo git pull --ff-only origin main`，再按部署说明执行更新脚本或重启服务。提供服务器更新命令时不要省略 `sudo`；`safe.directory` 无法解决写入权限问题。后续任务也须遵守 [AGENTS.md](AGENTS.md) 中的维护要求。
 
