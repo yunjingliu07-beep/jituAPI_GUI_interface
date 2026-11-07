@@ -1,5 +1,7 @@
 # 更新日志与个人存储配额
 
+当前生产站位于腾讯云广州，正式地址为 `https://imagemeow.yoband.cn`。以下各版本的变更说明保留发布历史，维护命令中的域名使用当前生产域名；服务器迁移见 [生产迁移记录](production-migration.md)。
+
 ## 更新日志
 
 版本数据集中维护在 `worker/core.js` 导出的 `RELEASES` 中，最新版本放在数组首位。每次对用户发布更新时，新增一个不同的 `version`（例如 `2026.10.19.2`）、日期、标题和中文变更列表，再构建并部署。不要仅修改旧版本的内容，否则已读用户不会重新弹窗。重启同一个版本不会重复提示。
@@ -38,9 +40,9 @@
 本次新增迁移 `0004_updates_storage.sql`，必须先迁移，再启动新代码。建议先按现有流程备份数据库、原图和 `/etc/image-meow/server.env`。更新代码后，使用现有安装器完成停服迁移和启动：
 
 ```bash
-cd /opt/image-meow
-sudo git pull --ff-only origin main
-sudo bash deploy/ubuntu/install.sh imagemeow.top
+cd /opt/image-meow &&
+sudo git pull --ff-only origin main &&
+sudo bash deploy/ubuntu/install.sh imagemeow.yoband.cn
 ```
 
 安装器保留现有配置和 HTTPS 配置。不要重新生成 `API_VAULT_KEY`。启动时将按上述规则清理已经超额的旧会话；其他账号与未超额的数据保留。
@@ -49,7 +51,7 @@ sudo bash deploy/ubuntu/install.sh imagemeow.top
 
 ```bash
 systemctl is-active image-meow
-curl --fail --silent --show-error https://imagemeow.top/api/updates
+curl --fail --silent --show-error https://imagemeow.yoband.cn/api/updates
 ```
 
 然后登录网站：应能看到更新弹窗、侧栏更新日志入口、账号页的容量信息。关闭更新弹窗后刷新，不应重复提示；清理通知在确认前保持可见。匿名 `curl` 不能访问 `/api/storage`，须通过登录后的浏览器验证。

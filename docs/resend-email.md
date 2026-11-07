@@ -1,6 +1,8 @@
 # Resend 注册验证与找回密码
 
-当前正式站点使用 Ubuntu 的 `image-meow` systemd 服务。生产邮件配置读取 `/etc/image-meow/server.env`；不要把生产密钥写进 Git、网页代码或旧 Sites 站点。
+当前正式站点为 `https://imagemeow.yoband.cn`，运行于腾讯云广州的 Ubuntu 24.04 服务器，使用 `image-meow` systemd 服务。生产邮件配置读取 `/etc/image-meow/server.env`；不要把生产密钥写进 Git、网页代码或旧 Sites 站点。
+
+本次迁移保留原 `RESEND_API_KEY`、`EMAIL_FROM` 和 `API_VAULT_KEY`。**网站域名与邮件发件域名独立管理**：网站换成 `imagemeow.yoband.cn` 不代表发件域名也已更换。下文的 `imagemeow.top` 是原发件域名示例；以当前 Resend 已验证域名和原配置为准，不要仅为网站迁移替换它。如果另行更换发件域名，需重新完成 Resend 验证和密钥范围配置。
 
 ## 1. 验证发件域名
 
@@ -23,8 +25,8 @@
 先将此变更合并到 GitHub 主分支。服务器上按既有备份流程备份代码、数据及配置，再更新：
 
 ```bash
-cd /opt/image-meow
-sudo git pull --ff-only
+cd /opt/image-meow &&
+sudo git pull --ff-only origin main &&
 sudo nano /etc/image-meow/server.env
 ```
 
@@ -38,10 +40,10 @@ EMAIL_FROM="image meow <noreply@imagemeow.top>"
 保留原有 `PUBLIC_ORIGIN`、`DATA_DIR`、`PORT` 和 `API_VAULT_KEY`。尤其不要重新生成 `API_VAULT_KEY`，否则已有 API 配置无法解密。不要执行会将配置文件完整打印出来的命令，也不要把配置内容粘贴进聊天。
 
 ```bash
-sudo chmod 600 /etc/image-meow/server.env
-sudo systemctl restart image-meow
-systemctl is-active image-meow
-curl --fail --silent --show-error https://imagemeow.top/api/config
+sudo chmod 600 /etc/image-meow/server.env &&
+sudo systemctl restart image-meow &&
+systemctl is-active image-meow &&
+curl --fail --silent --show-error https://imagemeow.yoband.cn/api/config
 ```
 
 配置就绪时响应包含 `emailCodeEnabled: true`、`passwordResetEnabled: true` 和 `registrationRequiresEmailCode: true`。这些字段只表示服务器已加载必要配置，不代表 Resend 域名、密钥权限或实际投递已验证。若缺少邮件配置，已有账号仍可密码登录，注册与找回密码会停用。邮件验证码仍使用 `email_codes` 表；当前邀请码功能还需应用 `0005_invitations.sql`，详见 [邀请码说明](invitations.md)。

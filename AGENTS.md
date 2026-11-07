@@ -1,8 +1,13 @@
 # Project maintenance
 
-The production website at https://imagemeow.top runs on the user's Ubuntu server.
+The production website at https://imagemeow.yoband.cn runs on the user's Tencent
+Cloud server in Guangzhou, using Ubuntu 24.04. The production migration and domain
+change were completed on 2026-11-07; `imagemeow.top` is the former website domain.
 The Sites project `appgprj_6ad3602eac1c8191beccd3a66e796b09` is a paused source mirror.
 Its retained custom-domain binding is not evidence of current public DNS routing.
+Current deployment and DNS details are in `docs/production-migration.md` and
+`docs/custom-domain.md`. Historical Sites-to-Hong-Kong cutover scripts contain the
+old domain; do not run them against the current production deployment.
 
 - The user may start a change from the Sites project. Read its source, and check the
   GitHub `main` head before editing or pushing so newer work is not overwritten.

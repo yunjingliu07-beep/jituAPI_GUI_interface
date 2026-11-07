@@ -18,11 +18,11 @@
 
 本次没有修改 `RELEASES`，不会因这次改动新增全体用户更新日志或更新通知。更新前应在服务停止期间备份整个数据目录，避免只复制正在使用的 SQLite 主文件。
 
-仓库位于 `/opt/image-meow`、正式域名为 `imagemeow.top` 的默认部署可在 Workbench 运行：
+当前生产位于腾讯云广州，仓库位于 `/opt/image-meow`，正式域名为 `imagemeow.yoband.cn`。在服务器终端运行：
 
 ```bash
-cd /opt/image-meow
-sudo git pull --ff-only origin main
+cd /opt/image-meow &&
+sudo git pull --ff-only origin main &&
 sudo bash deploy/ubuntu/update.sh
 ```
 

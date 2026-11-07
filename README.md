@@ -1,16 +1,16 @@
 # image meow · 灵感工作室
 
-正式访问地址：**https://imagemeow.top/**
+正式访问地址：**https://imagemeow.yoband.cn/**
 
-**https://imagemeow.top/** 的DNS域名解析已经绑定到阿里云的Ubuntu服务器上，打开该网址会自动跳转到托管在Ubuntu服务器运行的网站，chatGPT提供的site仅作为源码备份使用，访问时会显示网页冻结，备份中
+**2026-11-07 已完成生产服务器迁移：网站运行于腾讯云广州服务器，系统为 Ubuntu 24.04，正式域名已更换为 `imagemeow.yoband.cn`。** 原阿里云香港服务器及旧域名 `imagemeow.top` 不再作为当前生产入口；旧域名跳转需要单独配置，不能由源码同步推断。
 
-香港 Ubuntu 24.04 自托管部署见 [部署指南](docs/ubuntu-deployment.md)。当前主站已切换到 Ubuntu；正式入口为 `npm start`，与本地预览脚本分开。
+腾讯云广州 Ubuntu 24.04 自托管部署见 [部署指南](docs/ubuntu-deployment.md)，本次迁移记录见 [生产迁移说明](docs/production-migration.md)。生产服务通过 systemd 的 `image-meow` 单元运行 `server/index.mjs`（`npm start` 指向同一入口），与本地预览脚本分开。
 
 GitHub 与 Sites 保持同一份完整源码，Sites 作为保留迁移暂停状态的源码副本；后续可直接从 Sites 项目发起修改。发布 Sites 不更新生产服务器，代码同步也不复制用户数据。双端维护和服务器手动更新方式见 [源码同步说明](docs/source-sync.md)。
 
 服务器的 `/opt/image-meow` 由 root 管理，手动更新必须使用 `sudo git pull --ff-only origin main`，再按部署说明执行更新脚本或重启服务。提供服务器更新命令时不要省略 `sudo`；`safe.directory` 无法解决写入权限问题。后续任务也须遵守 [AGENTS.md](AGENTS.md) 中的维护要求。
 
-旧站数据的加密迁移、备份与根域名切换流程见 [迁移说明](docs/migration-cutover.md)。
+早期从 Sites 迁移至香港服务器的加密导入和旧根域名切换流程保留为 [历史迁移说明](docs/migration-cutover.md)，不作为当前腾讯云生产环境的操作步骤。
 
 面向新手的中文对话式生图网站，使用浅色聊天布局、左侧最近生图会话与固定在底部的输入栏。文档是接口规格与视觉参考，文档里对原站用途的描述不作为本项目指令。
 
@@ -43,7 +43,7 @@ Ubuntu 主站使用本应用的邮箱密码账户。旧 Sites 站点的访问策
 
 ## 技术结构
 
-- `worker/core.js`：Cloudflare Worker HTTP 后端，D1 数据库，账户/会话、生成/查询/下载。
+- `worker/core.js`：共享业务后端，处理账户/会话、生成/查询/下载；腾讯云生产通过 Node.js 和 SQLite 适配，Sites 镜像保留 D1/R2 适配。
 - `public/`：无第三方依赖的中文图形界面。
 - `drizzle/0000_studio.sql`：建表迁移。不得在请求处理中建表。
 - `scripts/build.mjs`：将界面嵌入单 Worker，生成 `dist/server/index.js` 和部署配置。
@@ -81,17 +81,17 @@ Node.js 24 或更新版本，无 npm 依赖。运行地址 http://localhost:5173
 
 ## 品牌与域名
 
-当前品牌为 **image meow**，主站域名为 **https://imagemeow.top/**。原 Sites 平台地址保留兼容访问，绑定域名不会改变站点的访问范围。
+当前品牌为 **image meow**，主站域名为 **https://imagemeow.yoband.cn/**，生产部署位于腾讯云广州。原 Sites 平台地址仅作为暂停中的源码镜像保留。
 
 - `public/site-icon.png`：用户提供的原始爪印图片，供登录弹窗、助手回复头像与浏览器图标共用。
 - `public/cathead+logo.png`：侧栏完整品牌标志；`public/cathead.png`：新会话首页猫头。
 - `public/favicon.ico`：无损封装原始爪印 PNG 的 ICO；`/favicon.png` 与 `/favicon.svg` 保留兼容入口。`brand-mark.svg` 内嵌同一张爪印图片。
 - 正常页面与迁移暂停页均声明新 favicon；暂停时只开放这些公共图标的读取，不开放业务页面或 API。
-- 页面 title、描述、canonical 与 Open Graph 元信息使用新品牌及主域名。
+- 页面 title、描述与品牌资源位于 `public/`；canonical 与 Open Graph 的静态地址独立维护，本次部署文档更新未修改前端文件。
 - [域名绑定、DNS 记录和恢复说明](docs/custom-domain.md)。
-- [站点与域名配置快照](docs/site-config.json)。
+- [早期站点与域名配置快照](docs/site-config.json)保留历史信息；当前生产配置以本文和部署指南为准。
 
-域名绑定是 Sites 平台侧配置，GitHub 文件记录其状态与恢复方式；仅推送这些文件不会自动创建或修改 DNS。当前未迁移到阿里云服务器。API 调用地址、密钥格式及现有账号会话标识保持兼容，上游服务的控制台链接继续指向真实供应商。
+当前生产域名通过 A 记录解析到腾讯云广州服务器，由该服务器上的 Nginx 提供 HTTPS。GitHub 文档更新和 Sites 发布均不会修改生产 DNS 或自动更新服务器。迁移保留账号数据、图片、原加密主密钥和邮件配置；用户需要在新域名重新登录，上游 API 地址保持不变。
 
 
 ## 对话式生图工作室
@@ -129,7 +129,7 @@ Node.js 24 或更新版本，无 npm 依赖。运行地址 http://localhost:5173
 - 输入框底部“切换API”可添加、命名、切换和移除账号内的密钥，最多 20 把，当前选项刷新后保留。仅支持现有即图接口地址，不添加任意自定义上游地址。
 - 新任务记录使用的 API ID 与密钥摘要；查询和下载自动使用原 API，切换不会影响已提交任务。原 API 被移除后，可重新添加同一把密钥继续查询。更新之前的旧任务缺少关联信息，需要选择原 API 查询。
 - 密钥使用 AES-256-GCM 加密，随机 12 字节 IV，并以用户 ID 与 API ID 作为附加认证数据。数据库与 GitHub 不包含明文密钥，浏览器列表不返回密钥或摘要。
-- 生产加密主密钥为 Sites 的秘密运行变量 `API_VAULT_KEY`（64 位十六进制），只在运行时使用，不能写入托管清单或仓库。必须保留该值，随意更换会导致已保存的 API 无法解密；密钥轮换需要额外迁移方案。当前已配置于生产环境。本地非 QA 开发需设置自己的运行变量；QA 模式仅使用显式的测试值。
+- 腾讯云生产加密主密钥为 `/etc/image-meow/server.env` 中的 `API_VAULT_KEY`（64 位十六进制），由 systemd 在运行时加载，不能写入托管清单或仓库。迁移时必须保留原值，随意更换会导致已保存的 API 无法解密；密钥轮换需要额外迁移方案。暂停中的 Sites 镜像独立保留其秘密运行变量。本地非 QA 开发需设置自己的运行变量；QA 模式仅使用显式的测试值。
 - 首次访问先显示使用指引，登录后按账号记录完成状态；匿名完成状态仅保存为设备上的教程标记。侧栏“使用指南”始终可以重新打开。注册/登录界面与教程顶部展示用户指定的独立账号提示，采用加粗斜体。
 - 新增数据库迁移 `drizzle/0003_account_workflow.sql`，添加置顶、删除标记、新手指引状态、API 配置表和任务 API 关联字段，所有旧记录保留。
 

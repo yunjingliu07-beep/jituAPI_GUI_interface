@@ -1,6 +1,6 @@
 # GitHub、Sites 与服务器的维护流程
 
-`imagemeow.top` 的生产网站运行在 Ubuntu 服务器上。Sites 平台中的域名绑定记录仍可能保留，不能据此判断公网 DNS 指向。
+生产网站已于 2026-11-07 迁移到腾讯云广州的 Ubuntu 24.04 服务器，正式地址为 `https://imagemeow.yoband.cn`。`imagemeow.top` 为旧域名。当前部署及迁移说明见 [生产迁移记录](production-migration.md)。Sites 平台中的旧域名绑定记录仍可能保留，不能据此判断公网 DNS 指向。
 
 Sites 项目 `appgprj_6ad3602eac1c8191beccd3a66e796b09` 作为完整源码副本，保留原迁移暂停状态。此次同步包括界面、Worker、Node 服务、迁移、测试和部署脚本；不恢复旧站访问，不复制服务器上的账号、会话、图片或密钥。
 

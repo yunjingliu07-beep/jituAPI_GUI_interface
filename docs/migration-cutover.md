@@ -1,4 +1,6 @@
-# 从 Sites 迁移至香港服务器
+# 历史流程：从 Sites 迁移至香港服务器
+
+本文保留早期 Sites → 阿里云香港服务器的迁移与旧域名 `imagemeow.top` 切换步骤。**当前生产站已于 2026-11-07 迁移至腾讯云广州服务器，域名为 `https://imagemeow.yoband.cn`**，详见 [当前生产迁移记录](production-migration.md)。本文中的旧域名、Sites 数据导入和硬编码域名切换脚本不适用于当前生产维护；Sites 继续保持暂停。
 
 工具由 `server/migration-transfer.mjs` 提供。导出包使用 AES-256-GCM 加密，再用目标服务器 RSA 公钥封装 AES 密钥；服务器私钥必须保留在 `/etc/image-meow/migration-private.pem`，不上传或提交 Git。迁移包不进入 GitHub。导入前必须核对操作者提供的 SHA-256 校验值。
 

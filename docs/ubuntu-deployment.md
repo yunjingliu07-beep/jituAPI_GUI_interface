@@ -1,17 +1,19 @@
 # Ubuntu 24.04 自托管部署
 
-适用于香港轻量应用服务器、小规模使用。此部署与现有 Sites 托管并行，安装脚本不会修改主站 DNS 或现有线上数据库。先使用 `preview.imagemeow.top` 验证；新数据库最初为空，**部署成功不等于旧账号、会话和参考图已经迁移**。
+当前生产站已于 **2026-11-07 迁移至腾讯云广州服务器**，正式地址为 **https://imagemeow.yoband.cn/**，系统为 Ubuntu 24.04。生产数据使用本机 SQLite 和文件目录；Sites 仅保留暂停的源码镜像。迁移记录见 [生产迁移说明](production-migration.md)。
 
-## 已安装运行环境后的操作
+本文的首次安装步骤只适用于全新实例。当前生产已完成数据恢复，日常维护直接使用下方的更新流程，不要用首次安装创建空数据库或重新生成原加密主密钥。
+
+## 全新实例首次安装
 
 需要 Node.js 24、Nginx、Git、curl。后端仅监听 `127.0.0.1:3000`，轻量应用服务器防火墙对外开放 TCP 80、443；无需对外开放 3000。
 
-在服务器的远程终端执行：
+仅在已准备好运行环境的全新实例上执行；当前已迁移的生产服务器不需要重复执行：
 
 ```bash
-sudo git clone https://github.com/yunjingliu07-beep/jituAPI_GUI_interface.git /opt/image-meow
-cd /opt/image-meow
-sudo bash deploy/ubuntu/install.sh preview.imagemeow.top
+sudo git clone https://github.com/yunjingliu07-beep/jituAPI_GUI_interface.git /opt/image-meow &&
+cd /opt/image-meow &&
+sudo bash deploy/ubuntu/install.sh imagemeow.yoband.cn
 ```
 
 若目标目录已经存在，先确认内容及 Git 状态，不要清空目录或覆盖未知文件。克隆若要求 GitHub 凭据且您没有访问权限，应先由仓库所有者授权，不能把令牌或密码写进克隆 URL。
@@ -20,16 +22,16 @@ sudo bash deploy/ubuntu/install.sh preview.imagemeow.top
 
 此阶段 HTTP 的网页入口返回 `HTTPS setup pending.` 属于正常状态；登录 Cookie 要求 HTTPS，证书部署完成后才开放页面。
 
-## 临时域名与 HTTPS
+## 生产域名与 HTTPS
 
-1. 在阿里云 DNS 为 `imagemeow.top` 新增 A 记录：主机记录 `preview`，记录值为该服务器公网 IPv4。现有主机记录 `@` 的记录暂时保持。
-2. 在轻量服务器防火墙开放 TCP 80、443，若系统启用了 UFW，也需放行这两个端口。保留已有的远程管理通道；不要在不清楚 SSH 端口时重置防火墙。
-3. 等待 `http://preview.imagemeow.top/healthz` 返回 `{"ok":true}`。
+1. 在 `yoband.cn` 的 DNS 平台添加 A 记录：主机记录 `imagemeow`，记录值 `1.12.241.171`。完整记录为 `imagemeow.yoband.cn`，详见 [域名配置](custom-domain.md)。
+2. 在腾讯云防火墙或安全组开放 TCP 80、443；若系统启用了 UFW，也需放行这两个端口。保留已有的远程管理通道；不要在不清楚 SSH 端口时重置防火墙。
+3. 确认 Nginx 可通过 HTTP 提供 `/.well-known/acme-challenge/` 文件。后端已启动时，`http://imagemeow.yoband.cn/healthz` 应返回 `{"ok":true}`；迁移恢复阶段可以先保持后端停止，只验证证书入口。
 4. 安装证书工具并签发证书：
 
 ```bash
-sudo apt-get install -y certbot
-sudo certbot certonly --webroot -w /var/www/image-meow-acme -d preview.imagemeow.top
+sudo apt-get install -y certbot &&
+sudo certbot certonly --webroot -w /var/www/image-meow-acme --cert-name imagemeow.yoband.cn -d imagemeow.yoband.cn
 ```
 
 按提示填写用于证书通知的邮箱，并同意证书条款。证书签发需要域名已指向服务器且 80 端口可访问。
@@ -37,20 +39,20 @@ sudo certbot certonly --webroot -w /var/www/image-meow-acme -d preview.imagemeow
 5. 启用 HTTPS：
 
 ```bash
-cd /opt/image-meow
-sudo bash deploy/ubuntu/enable-https.sh preview.imagemeow.top
+cd /opt/image-meow &&
+sudo bash deploy/ubuntu/enable-https.sh imagemeow.yoband.cn
 ```
 
 6. 添加续期后重载钩子，验证续期与定时任务：
 
 ```bash
-sudo install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
-sudo install -m 0755 deploy/ubuntu/reload-nginx.sh /etc/letsencrypt/renewal-hooks/deploy/image-meow-nginx
+sudo install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy &&
+sudo install -m 0755 /opt/image-meow/deploy/ubuntu/reload-nginx.sh /etc/letsencrypt/renewal-hooks/deploy/image-meow-nginx &&
 sudo certbot renew --dry-run
 systemctl list-timers certbot.timer
 ```
 
-然后访问 `https://preview.imagemeow.top`，使用测试账号验证注册、登录、新手教程、会话操作、API 切换、文字/参考图生图和重新编辑。真实生图会使用供应商额度，按实际需求验证。
+然后访问 `https://imagemeow.yoband.cn`，验证原账号登录、历史、图片读取和 API 列表；迁移到新域名后需要重新登录。注册、邮件及实际生图按需另行验收，真实生图会使用供应商额度。
 
 ## 文件位置与维护
 
@@ -62,6 +64,7 @@ systemctl list-timers certbot.timer
 | `/var/lib/image-meow/references` | 账号私有原参考图、遮罩 |
 | `/var/lib/image-meow/generated` | 账号私有生成结果图片，计入个人空间配额 |
 | `/etc/nginx/sites-available/image-meow.conf` | 网站域名和 TLS 反向代理配置 |
+| `/etc/letsencrypt/live/imagemeow.yoband.cn/` | 当前域名的证书与私钥，私钥不进入仓库 |
 
 `API_VAULT_KEY` 是本站加密密钥，不是即图 API Key。不要发到聊天、截图或 GitHub；不要随意更换。备份时必须同时保留它，单独恢复数据库无法解密已保存的 API。
 
@@ -101,20 +104,13 @@ sudo git pull --ff-only origin main &&
 sudo systemctl restart image-meow
 ```
 
-## 迁移旧站与切换主域名（尚未执行）
+## 已完成的生产迁移
 
-当前 Sites 的正式数据库为 D1，参考图在 R2；GitHub 不包含它们，服务器初始密钥也与旧站不同。
+2026-11-07，旧阿里云香港 Ubuntu 服务器的数据与原版本源码已迁移到腾讯云广州服务器，正式域名更换为 `imagemeow.yoband.cn`。本次为 Ubuntu → Ubuntu 迁移，保留整个数据库、参考图、生成图片、原加密主密钥及邮件配置，不重新执行 Sites 的四表导入流程。迁移过程和恢复要求见 [生产迁移记录](production-migration.md)。
 
-必须在切换主站前单独完成：
+早期 Sites → 香港服务器的步骤保留在 [历史迁移说明](migration-cutover.md)。其中硬编码 `imagemeow.top` 的 `cutover-domain.sh`、`check-root-https.sh` 不适用于当前子域名；当前 HTTPS 使用上方带域名参数的 `enable-https.sh`。
 
-- 获取完整、未截断的 D1 数据导出及 R2 参考图对象；现有工具的分页查看结果不是完整备份。
-- 安全迁移原 `API_VAULT_KEY`。若平台不提供该密钥导出，需制定保存密钥记录的替代迁移方案，或明确让用户重新添加 API，不能承诺仅复制数据库即可保留 API 使用。
-- 核对用户/会话/任务/参考图数量，验证原密码和已保存 API 能否使用；不得把测试用户数据库覆盖到正式数据上。
-- 为最终迁移安排短暂停写窗口，保存最终一致快照；避免 DNS 生效期间两个后端同时产生独立记录。
-- 在新机签发 `imagemeow.top` 证书，调整 Nginx 的域名/证书与 `PUBLIC_ORIGIN=https://imagemeow.top`，验证后才将根域名的网站 A 记录切至新服务器。检查同名 AAAA、CNAME 等记录以免残留旧入口。
-- 保留旧站和备份用于回退；切换后产生的新数据需要一并考虑，不能只切回 DNS 就假定数据已回退。
-
-这些步骤需要另行操作。安装预览服务不会自动执行数据迁移、修改原 Sites 配置、切换主域名或删除旧站。
+旧服务器保持停服并保留备份，Sites 镜像保持暂停。新站开始写入后，回退需要处理新增数据，不能只切回 DNS 或启动旧服务。
 
 
 邀请码注册需要先完成数据库迁移及首位站长设置，见 [邀请码上线步骤](invitations.md#ubuntu-首次上线)。新成员使用有效邀请码和注册邮箱验证码；已有账号无需邀请码。

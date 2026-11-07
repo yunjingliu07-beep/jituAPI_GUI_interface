@@ -16,12 +16,14 @@
 
 ## Ubuntu 首次上线
 
-先合并本功能的 GitHub PR，再按现有维护流程备份数据库、参考图与 `/etc/image-meow/server.env`。在当前生产服务器运行：
+当前生产站已迁移至腾讯云广州，地址为 `https://imagemeow.yoband.cn`；迁移保留原有站长、管理员和邀请码数据，不需要重新初始化站长。以下步骤用于首次引入本功能，日常更新按 [部署指南](ubuntu-deployment.md#文件位置与维护) 执行。
+
+先合并本功能的 GitHub PR，再按现有维护流程备份数据库、参考图与 `/etc/image-meow/server.env`。在服务器运行：
 
 ```bash
-cd /opt/image-meow
-sudo git pull --ff-only origin main
-sudo bash deploy/ubuntu/install.sh imagemeow.top
+cd /opt/image-meow &&
+sudo git pull --ff-only origin main &&
+sudo bash deploy/ubuntu/install.sh imagemeow.yoband.cn
 ```
 
 安装器会短暂停服、应用迁移并重启，保留既有环境变量及 HTTPS 配置。不要只重启服务跳过数据库迁移。
