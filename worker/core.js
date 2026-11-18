@@ -232,6 +232,9 @@ async function accountStorageLimit(env,user) {
  return state?.limit_bytes||USER_STORAGE_LIMIT;
 }
 export const RELEASES = [{
+ version:'2026.11.18.1',date:'2026-11-18',title:'新增 GPT Image 2.6 Flare 与 Sunburst 模型',
+ changes:['可在模型列表中选择 gpt-image-2.6-flare 和 gpt-image-2.6-sunburst；支持的尺寸、张数与实际价格以即图对应模型详情为准。']
+},{
  version:'2026.11.07.1',date:'2026-11-07',title:'新增 GPT Image 2.6 模型',
  changes:['可在模型列表中选择 gpt-image-2.6，沿用现有文生图、图生图和局部编辑的参数与提交方式。']
 },{
